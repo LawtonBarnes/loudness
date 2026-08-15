@@ -153,7 +153,14 @@ def find_keyboard_devices():
         if dev.capabilities().get(ecodes.EV_KEY):
             devices.append(dev)
     if not devices:
-        sys.exit("No keyboard input device found (looked for devices with an EV_KEY capability)")
+        # Puppets in the McBrain fleet run unattended, with no keyboard/
+        # remote physically attached -- STRINGS launches this app
+        # headless. An empty device list here just means the evdev
+        # selector loop below never has anything to read, so the app
+        # runs its normal render loop forever with no input reactivity,
+        # rather than refusing to start. Production/dev use with a real
+        # remote attached is unaffected.
+        print("No keyboard input device found -- running headless/unattended.", file=sys.stderr)
     return devices
 
 
