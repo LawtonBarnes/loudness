@@ -8,6 +8,10 @@ the analog composite video jack to a CRT. Shares its console/framebuffer
 architecture with [BARS](https://github.com/LawtonBarnes/bars) -- headless
 pygame, direct `/dev/fb0` writes, raw `evdev` keyboard input.
 
+![Running on a real CRT](./img/TV_LOUDNESS.jpg)
+
+![Framebuffer capture](./img/SCREEN_LOUDNESS.png)
+
 ## Keyboard / remote controls
 
 | Key | Action |
