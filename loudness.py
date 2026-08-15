@@ -14,6 +14,7 @@ import configparser
 import fcntl
 import mmap
 import os
+import re
 import select
 import selectors
 import signal
@@ -30,7 +31,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.2"
+VERSION = "1.3"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -78,11 +79,13 @@ def load_settings():
         "noise_gate_db": "-20",
         "bass_cut_db": "16",
         "squelch_db": "10",
+        "gain_bias": "0.0",
     }
     parser.read(SETTINGS_PATH)
     section = parser["vizmic"]
     return {
         "device": section.get("device"),
+        "gain_bias": section.getfloat("gain_bias"),
         "num_bars": section.getint("num_bars"),
         "sensitivity": section.getfloat("sensitivity"),
         "underscan_scale": section.getfloat("underscan_scale"),
@@ -98,6 +101,43 @@ def load_settings():
         "led_height": section.getint("led_height"),
         "led_gap": section.getint("led_gap"),
     }
+
+
+def save_setting(section, key, value):
+    # Deliberately doesn't use configparser's own .write() -- it discards
+    # every comment in the file on rewrite, and settings.ini's comments
+    # are the actual documentation for each option. This is a surgical
+    # text edit instead: replace key's existing line in place if it's
+    # already there, otherwise append it right after the section header
+    # (creating the section too, if the file doesn't have it yet at
+    # all). Every other line, comment or not, is left byte-identical.
+    # Duplicated from bars.py rather than shared, matching this
+    # project's no-shared-library convention.
+    text = SETTINGS_PATH.read_text() if SETTINGS_PATH.exists() else ""
+    lines = text.splitlines(keepends=True)
+    section_header = f"[{section}]"
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    in_section = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == section_header:
+            in_section = True
+            continue
+        if in_section and stripped.startswith("[") and stripped != section_header:
+            lines.insert(i, f"{key} = {value}\n")
+            SETTINGS_PATH.write_text("".join(lines))
+            return
+        if in_section and key_re.match(line):
+            lines[i] = f"{key} = {value}\n"
+            SETTINGS_PATH.write_text("".join(lines))
+            return
+    if in_section:
+        lines.append(f"{key} = {value}\n")
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"\n{section_header}\n{key} = {value}\n")
+    SETTINGS_PATH.write_text("".join(lines))
 
 
 class FrameBuffer:
@@ -324,11 +364,16 @@ class SpectrumAnalyzer:
         noise_gate_db=-40.0,
         bass_cut_db=0.0,
         squelch_db=0.0,
+        gain_bias=0.0,
     ):
         self.num_bars = num_bars
         self.max_gain = sensitivity
         self.gain = sensitivity
-        self.gain_bias = 0.0  # manual offset, Up/Down-adjustable -- see class docstring
+        # Manual offset, Up/Down-adjustable -- see class docstring.
+        # Initializes from whatever was last live-tuned (settings.ini's
+        # gain_bias, see handle_keycode/save_setting) rather than always
+        # starting back at 0.0.
+        self.gain_bias = gain_bias
         self.noise_gate_db = noise_gate_db
         self.peak_hold_db = noise_gate_db
         self.squelch_db = squelch_db
@@ -450,6 +495,7 @@ class VizApp:
             settings["noise_gate_db"],
             settings["bass_cut_db"],
             settings["squelch_db"],
+            settings["gain_bias"],
         )
         self.num_bars = settings["num_bars"]
         self.draw_w = int(FRAME_W * settings["underscan_scale"])
@@ -572,9 +618,11 @@ class VizApp:
         elif code == ecodes.KEY_UP:
             self.analyzer.gain_bias += 3.0
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
+            save_setting("vizmic", "gain_bias", self.analyzer.gain_bias)
         elif code == ecodes.KEY_DOWN:
             self.analyzer.gain_bias -= 3.0
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
+            save_setting("vizmic", "gain_bias", self.analyzer.gain_bias)
         elif code == ecodes.KEY_POWER:
             self.power_dialog_active = True
             self.power_dialog_selection = 0
