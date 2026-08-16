@@ -40,6 +40,7 @@ FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
 FRAME_W, FRAME_H = 720, 480
 SAMPLE_RATE = 44100
 CHUNK = 1024  # ~23ms/frame at 44.1kHz
+TARGET_FPS = 30  # NTSC is 29.97fps -- no point rendering faster than that
 
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
@@ -481,6 +482,7 @@ class VizApp:
 
         pygame.init()
         pygame.display.set_mode((FRAME_W, FRAME_H))  # headless (dummy driver)
+        self.clock = pygame.time.Clock()
 
         self.fb = FrameBuffer()
 
@@ -745,6 +747,7 @@ class VizApp:
                     sys.exit("Lost the mic capture stream (arecord exited) -- check `device` in settings.ini")
                 levels = self.analyzer.update(samples)
                 self.render(levels)
+                self.clock.tick(TARGET_FPS)
         finally:
             for dev in self.kbd_devices:
                 try:
