@@ -20,6 +20,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import time
 from colorsys import hsv_to_rgb
 from pathlib import Path
 
@@ -36,6 +37,8 @@ VERSION = "1.4"
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
 FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
+SPLASH_PATH = BASE_DIR / "splash.png"  # optional -- see show_splash()
+SPLASH_SECONDS = 3.0
 
 FRAME_W, FRAME_H = 720, 480
 SAMPLE_RATE = 44100
@@ -185,6 +188,28 @@ class FrameBuffer:
     def close(self):
         self.mm.close()
         os.close(self.fd)
+
+
+def show_splash(fb):
+    """Blocking splash shown once at launch, before the app's real
+    content appears -- copied from bars.py (see that file's version for
+    the full rationale), same no-shared-library convention as the rest
+    of this file's duplicated FrameBuffer/find_keyboard_devices code."""
+    if not SPLASH_PATH.exists():
+        return
+    try:
+        img = pygame.image.load(str(SPLASH_PATH)).convert()
+    except (pygame.error, OSError) as exc:
+        print(f"Splash load failed: {exc}", file=sys.stderr)
+        return
+    canvas = pygame.Surface((FRAME_W, FRAME_H))
+    canvas.fill(BLACK)
+    img_w, img_h = img.get_size()
+    scale = min(FRAME_W / img_w, FRAME_H / img_h)
+    scaled = pygame.transform.smoothscale(img, (int(img_w * scale), int(img_h * scale)))
+    canvas.blit(scaled, ((FRAME_W - scaled.get_width()) // 2, (FRAME_H - scaled.get_height()) // 2))
+    fb.write_surface(canvas)
+    time.sleep(SPLASH_SECONDS)
 
 
 def find_keyboard_devices():
@@ -555,6 +580,8 @@ class VizApp:
             self.console_graphics_mode = True
         except OSError as exc:
             print(f"Console graphics mode not available: {exc}", file=sys.stderr)
+
+        show_splash(self.fb)
 
     @staticmethod
     def _fit_font(texts, available_w, available_h, max_size=32, min_size=6):
