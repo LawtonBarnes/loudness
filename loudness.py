@@ -194,7 +194,11 @@ def show_splash(fb):
     """Blocking splash shown once at launch, before the app's real
     content appears -- copied from bars.py (see that file's version for
     the full rationale), same no-shared-library convention as the rest
-    of this file's duplicated FrameBuffer/find_keyboard_devices code."""
+    of this file's duplicated FrameBuffer/find_keyboard_devices code.
+    Shown at the source image's own native resolution, centered on
+    black -- deliberately NOT scaled to fill the frame (user's explicit
+    call, 2026-08-18); a larger-than-frame image would just get cropped
+    to the center, not shrunk to fit."""
     if not SPLASH_PATH.exists():
         return
     try:
@@ -205,9 +209,7 @@ def show_splash(fb):
     canvas = pygame.Surface((FRAME_W, FRAME_H))
     canvas.fill(BLACK)
     img_w, img_h = img.get_size()
-    scale = min(FRAME_W / img_w, FRAME_H / img_h)
-    scaled = pygame.transform.smoothscale(img, (int(img_w * scale), int(img_h * scale)))
-    canvas.blit(scaled, ((FRAME_W - scaled.get_width()) // 2, (FRAME_H - scaled.get_height()) // 2))
+    canvas.blit(img, ((FRAME_W - img_w) // 2, (FRAME_H - img_h) // 2))
     fb.write_surface(canvas)
     time.sleep(SPLASH_SECONDS)
 
