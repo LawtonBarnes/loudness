@@ -38,7 +38,7 @@ BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
 FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
 SPLASH_PATH = BASE_DIR / "splash.png"  # optional -- see show_splash()
-SPLASH_SECONDS = 3.0
+SPLASH_SECONDS = 5.0
 
 FRAME_W, FRAME_H = 720, 480
 SAMPLE_RATE = 44100
