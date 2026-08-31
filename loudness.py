@@ -55,7 +55,7 @@ BAND_CENTERS_HZ = (125, 250, 500, 750, 1000, 1500, 2000, 4000, 8000)
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 ORANGE = (0xFF, 0xA5, 0x00)
-TITLE_TEXT = "AUDIO SPECTRUM ANALYZER"
+TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -555,8 +555,8 @@ class VizApp:
         self.total_rungs = max(1, self.draw_h // self.led_pitch)
         self.min_rungs = settings["min_rungs"]
 
-        self.legend_surfaces, self.legend_y, legend_font = self._build_legend()
-        self.title_surface, self.title_x, self.title_y = self._build_title(legend_font)
+        self.legend_surfaces, self.legend_y, self.legend_font = self._build_legend()
+        self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
 
         self.osd_font = pygame.font.Font(str(FONT_PATH), 36)
         self.option_font = pygame.font.Font(str(FONT_PATH), 32)
@@ -632,13 +632,17 @@ class VizApp:
         bars, at the same point size as the legend labels. Falls back to
         an independently fit size only if the legend's size doesn't
         actually fit up there (narrow underscan margins, tiny num_bars
-        making for a big legend font, etc.)."""
+        making for a big legend font, etc.). Includes the live gain_bias
+        readout (2026-08-31), so this isn't just called once at startup
+        like the legend -- handle_keycode's Up/Down handlers call this
+        again after changing gain_bias, to keep the header in sync."""
+        title_text = f"{TITLE_PREFIX} - GAIN {self.analyzer.gain_bias:+.0f} DB"
         available_w = self.draw_w
         available_h = self.offset_y - 8
         font = legend_font
-        if font.size(TITLE_TEXT)[0] > available_w or font.get_height() > available_h:
-            font = self._fit_font([TITLE_TEXT], available_w, available_h)
-        surf = font.render(TITLE_TEXT, True, ORANGE)
+        if font.size(title_text)[0] > available_w or font.get_height() > available_h:
+            font = self._fit_font([title_text], available_w, available_h)
+        surf = font.render(title_text, True, ORANGE)
         x = self.offset_x + (self.draw_w - surf.get_width()) // 2
         y = (self.offset_y - surf.get_height()) // 2
         return surf, x, y
@@ -660,10 +664,12 @@ class VizApp:
             self.analyzer.gain_bias += 3.0
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
             save_setting("vizmic", "gain_bias", self.analyzer.gain_bias)
+            self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
         elif code == ecodes.KEY_DOWN:
             self.analyzer.gain_bias -= 3.0
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
             save_setting("vizmic", "gain_bias", self.analyzer.gain_bias)
+            self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
         elif code == ecodes.KEY_POWER:
             self.power_dialog_active = True
             self.power_dialog_selection = 0
