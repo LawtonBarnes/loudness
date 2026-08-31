@@ -45,6 +45,13 @@ SAMPLE_RATE = 44100
 CHUNK = 1024  # ~23ms/frame at 44.1kHz
 TARGET_FPS = 30  # NTSC is 29.97fps -- no point rendering faster than that
 
+# Fixed band layout (2026-08-31), replacing the old log-spaced
+# low_freq/high_freq/num_bars auto-computation -- these are the exact
+# center frequencies requested, not derived. format_freq_label() below
+# already renders these correctly as-is (125, 250, 500, 750, 1K, 1K5,
+# 2K, 4K, 8K), no label-formatting change needed.
+BAND_CENTERS_HZ = (125, 250, 500, 750, 1000, 1500, 2000, 4000, 8000)
+
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 ORANGE = (0xFF, 0xA5, 0x00)
@@ -69,7 +76,6 @@ def load_settings():
     parser = configparser.ConfigParser()
     parser["vizmic"] = {
         "device": "default",
-        "num_bars": "24",
         "sensitivity": "30",
         "low_freq": "50",
         "high_freq": "12000",
@@ -90,7 +96,6 @@ def load_settings():
     return {
         "device": section.get("device"),
         "gain_bias": section.getfloat("gain_bias"),
-        "num_bars": section.getint("num_bars"),
         "sensitivity": section.getfloat("sensitivity"),
         "underscan_scale": section.getfloat("underscan_scale"),
         "bar_height_scale": section.getfloat("bar_height_scale"),
@@ -384,7 +389,6 @@ class SpectrumAnalyzer:
 
     def __init__(
         self,
-        num_bars,
         sensitivity,
         low_freq,
         high_freq,
@@ -394,6 +398,7 @@ class SpectrumAnalyzer:
         squelch_db=0.0,
         gain_bias=0.0,
     ):
+        num_bars = len(BAND_CENTERS_HZ)
         self.num_bars = num_bars
         self.max_gain = sensitivity
         self.gain = sensitivity
@@ -410,9 +415,10 @@ class SpectrumAnalyzer:
         # Music skews toward bass/mid energy, so a flat dB scale makes the
         # spectrum trail off toward the right -- treble_boost ramps in extra
         # dB by the last band to compensate, bass_cut_db cuts the bottom
-        # band to match. Bands are log-spaced, so a linear ramp over band
-        # *index* is already linear over octaves -- no extra log-frequency
-        # math needed.
+        # band to match. A simple linear ramp over band *index* (not exact
+        # octave spacing -- BAND_CENTERS_HZ isn't perfectly uniform in log
+        # terms, e.g. 750Hz/1500Hz break the octave pattern) is still a
+        # fine approximation for this purpose.
         #
         # This same tilt now feeds the auto-gain's peak tracking too (see
         # update()), not just the display -- it wasn't always this way.
@@ -440,22 +446,27 @@ class SpectrumAnalyzer:
         # fraction of full scale and 20*log10(...) is dBFS.
         self.reference = 32767 * np.sum(self.window) / 2
         self.freqs = np.fft.rfftfreq(CHUNK, d=1 / SAMPLE_RATE)
-        edges = np.logspace(np.log10(low_freq), np.log10(high_freq), num_bars + 1)
-        # Per band: which FFT bins fall in [edges[i], edges[i+1]), and the
-        # geometric-mean center frequency as an interpolation fallback for
+        # Band boundaries: geometric mean of each pair of adjacent fixed
+        # centers for the 8 internal edges (standard graphic-EQ convention
+        # for turning named centers into ranges), with low_freq/high_freq
+        # (still settings.ini-configurable) bounding the outermost edge of
+        # the bottom (125) and top (8K) bands.
+        centers = np.array(BAND_CENTERS_HZ, dtype=float)
+        inner_edges = np.sqrt(centers[:-1] * centers[1:])
+        edges = np.concatenate(([low_freq], inner_edges, [high_freq]))
+        # Per band: which FFT bins fall in [edges[i], edges[i+1]), with the
+        # fixed center frequency itself as an interpolation fallback for
         # when there are none. With a 1024-sample FFT at 44.1kHz, bins are
-        # ~43Hz apart, but log-spaced low bands are narrower than that
-        # (e.g. 50-63Hz) -- several contained *no* bin at all and were
-        # permanently stuck at zero (a dead black band a couple bars in on
-        # the CRT). Interpolation patches those. It's a fallback rather
-        # than the default for every band, though: sampling a single point
-        # at a *wide* high-frequency band's center missed off-center
-        # narrowband content entirely in testing (an 8kHz tone landed
-        # ~500Hz from band 22's center, well outside the FFT window's
-        # main lobe, and read as near-silent) -- real bin-averaging is
-        # correct wherever there are bins to average.
+        # ~43Hz apart, so a narrow band (e.g. 125's ~50-177Hz range) can
+        # still contain zero bins -- interpolation patches those. It's a
+        # fallback rather than the default for every band, though: sampling
+        # a single point at a *wide* high-frequency band's center missed
+        # off-center narrowband content entirely in testing (an 8kHz tone
+        # landed well outside the FFT window's main lobe when sampled this
+        # way, and read as near-silent) -- real bin-averaging is correct
+        # wherever there are bins to average.
         self.band_masks = [(self.freqs >= edges[i]) & (self.freqs < edges[i + 1]) for i in range(num_bars)]
-        self.band_centers = np.sqrt(edges[:-1] * edges[1:])
+        self.band_centers = centers
         self.displayed = np.zeros(num_bars)
 
     def update(self, samples):
@@ -516,7 +527,6 @@ class VizApp:
         self.mic = MicCapture(settings["device"])
 
         self.analyzer = SpectrumAnalyzer(
-            settings["num_bars"],
             settings["sensitivity"],
             settings["low_freq"],
             settings["high_freq"],
@@ -526,7 +536,7 @@ class VizApp:
             settings["squelch_db"],
             settings["gain_bias"],
         )
-        self.num_bars = settings["num_bars"]
+        self.num_bars = self.analyzer.num_bars
         self.draw_w = int(FRAME_W * settings["underscan_scale"])
         # bar_height_scale shrinks only the bar area vertically, on top of
         # underscan_scale -- offset_y (top/bottom margin, used to size and
