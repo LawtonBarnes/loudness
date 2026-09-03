@@ -90,9 +90,18 @@ def load_settings():
         "bass_cut_db": "16",
         "squelch_db": "10",
         "gain_bias": "0.0",
+        "band_offsets": "0,0,0,0,0,0,0,0,0",
     }
     parser.read(SETTINGS_PATH)
     section = parser["vizmic"]
+    band_offsets = [float(x) for x in section.get("band_offsets").split(",")]
+    if len(band_offsets) != len(BAND_CENTERS_HZ):
+        print(
+            f"band_offsets has {len(band_offsets)} values, expected {len(BAND_CENTERS_HZ)} "
+            "-- ignoring, using 0 for all bands.",
+            file=sys.stderr,
+        )
+        band_offsets = [0.0] * len(BAND_CENTERS_HZ)
     return {
         "device": section.get("device"),
         "gain_bias": section.getfloat("gain_bias"),
@@ -106,6 +115,7 @@ def load_settings():
         "treble_boost": section.getfloat("treble_boost"),
         "bass_cut_db": section.getfloat("bass_cut_db"),
         "squelch_db": section.getfloat("squelch_db"),
+        "band_offsets": band_offsets,
         "bar_gap": section.getint("bar_gap"),
         "led_height": section.getint("led_height"),
         "led_gap": section.getint("led_gap"),
@@ -397,6 +407,7 @@ class SpectrumAnalyzer:
         bass_cut_db=0.0,
         squelch_db=0.0,
         gain_bias=0.0,
+        band_offsets=None,
     ):
         num_bars = len(BAND_CENTERS_HZ)
         self.num_bars = num_bars
@@ -440,7 +451,16 @@ class SpectrumAnalyzer:
         # display is strictly better: whichever band ends up tallest after
         # EQ is the one gain now targets at TARGET_HEADROOM_DB, cut bands
         # included.
-        self.tilt_db = np.linspace(-bass_cut_db, treble_boost, num_bars)
+        # band_offsets (2026-09-02): per-mic hardware calibration, layered on
+        # top of the shared musical tilt rather than replacing it -- cheap
+        # USB electret capsules vary unit-to-unit above ~1kHz (measured via a
+        # tone sweep across real hardware, see loudness repo's calibration/),
+        # not correctable by a straight-line tilt since the deviation isn't
+        # monotonic (e.g. one mic reads weak specifically at 4kHz but fine at
+        # 2kHz and 8kHz). Defaults to all-zero (load_settings() guarantees a
+        # 9-length list), so a puppet with no calibration data behaves
+        # identically to before this feature existed.
+        self.tilt_db = np.linspace(-bass_cut_db, treble_boost, num_bars) + np.array(band_offsets or [0.0] * num_bars)
         # Reference magnitude: approximately what a full-scale (0dBFS)
         # sine produces after this window, so magnitude/reference is a
         # fraction of full scale and 20*log10(...) is dBFS.
@@ -535,6 +555,7 @@ class VizApp:
             settings["bass_cut_db"],
             settings["squelch_db"],
             settings["gain_bias"],
+            settings["band_offsets"],
         )
         self.num_bars = self.analyzer.num_bars
         self.draw_w = int(FRAME_W * settings["underscan_scale"])
