@@ -18,6 +18,60 @@ one JSON object to stdout with the 9-band median/min/max dBFS
 (`BAND_CENTERS_HZ = (125, 250, 500, 750, 1000, 1500, 2000, 4000, 8000)`,
 matching `loudness.py`'s bands exactly) plus overall broadband dBFS.
 
+## How to repeat this test (e.g. after the per-unit fan upgrade)
+
+Run everything from a machine with SSH access to all 4 puppets (`p1`-`p4`
+aliases) and curl access to their STRINGS API on port 8420.
+
+1. **Reset to a clean baseline** on each puppet: `amixer -c 1 sset Mic 16`
+   (100% ALSA capture gain) + `sudo alsactl store`, and set `gain_bias = 0.0`
+   in `/opt/loudness/settings.ini`. Leave `band_offsets` as whatever it
+   currently is (or zero it out first if you want a from-scratch profile
+   rather than refining the existing one).
+2. **Free the mic devices** -- `arecord` needs exclusive access, so
+   reassign every puppet away from `loudness` first:
+   `curl -X POST http://<puppet-ip>:8420/assign -d '{"app":"bars"}'`
+   for each of the 4 IPs.
+3. **Deploy the tool**: `scp calibration/calibrate.py <puppet>:/opt/loudness/calibrate.py`
+   to each puppet (it reads `settings.ini` from its own directory for the
+   device path, so it must sit next to `loudness.py`, not in this
+   `calibration/` folder).
+4. **For each test condition** (get the room into that state first, then
+   capture all 4 puppets in parallel so they're measuring the same
+   moment):
+   ```
+   for h in p1 p2 p3 p4; do
+     ssh $h "cd /opt/loudness && python3 calibrate.py --duration 6 --label <condition>" > ${h}_<condition>.json &
+   done
+   wait
+   ```
+   Then append to the running dataset: `python3 build_csv.py <condition> <tone_hz_or_empty> p1_x.json p2_x.json p3_x.json p4_x.json`
+   (appends to `calibration_data.csv` in the current directory; pass `""`
+   for `<tone_hz_or_empty>` on every non-tone condition -- it's a
+   required positional argument, not optional, and a missing empty
+   string silently eats the first json filename as the tone value).
+   The original run used: `quiet`, `hvac`, `music` (comfortable volume),
+   `music_max` (full blast), `speech`, and tones at each of `125 250 500
+   750 1000 1500 2000 4000 8000` (matching `BAND_CENTERS_HZ` exactly --
+   keep using these same 9 frequencies so results compare directly
+   against the table below).
+5. **Derive the correction profile**: `python3 build_profile.py` (reads
+   `calibration_data.csv` in the current directory, prints the raw
+   per-band tone readings, the fleet average, and the capped correction
+   per puppet -- edit `CAP_DB` at the top if you want a different cap
+   than +/-12dB).
+6. **Apply it**: replace the `band_offsets = ...` line in each puppet's
+   `settings.ini` with that puppet's row from step 5's output (keep the
+   existing explanatory comment block above it).
+7. **Reassign back to `loudness`** via the same `/assign` endpoint, and
+   sanity-check with `arecord`/`amixer` that nothing silently regressed
+   (see the ALSA-persistence-across-reboot gotcha elsewhere in this
+   project -- worth re-confirming capture gain is still 100% before
+   trusting a fresh run's numbers).
+8. Commit `calibration_data.csv` (should now have both the old and new
+   runs, so drift over time/hardware changes is visible) and the updated
+   `band_offsets` lines, and update this README's results section below.
+
 ## 2026-09-02 fleet calibration run
 
 Baseline conditions before testing: all 4 puppets' ALSA capture gain
