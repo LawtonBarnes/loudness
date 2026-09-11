@@ -32,7 +32,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.7"
+VERSION = "1.8"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -56,6 +56,14 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 ORANGE = (0xFF, 0xA5, 0x00)
 TITLE_PREFIX = "SPECTRUM ANALYZER"
+
+# Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
+# for what each one actually draws. Order here is the Left/Right cycle order.
+LOOKS = ("hard", "gradient", "color_off", "grey_off")
+OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
+HARD_GREEN = (0, 200, 0)
+HARD_YELLOW = (230, 200, 0)
+HARD_RED = (210, 30, 30)
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -91,6 +99,7 @@ def load_settings():
         "squelch_db": "10",
         "gain_bias": "0.0",
         "band_offsets": "0,0,0,0,0,0,0,0,0",
+        "look": LOOKS[0],
     }
     parser.read(SETTINGS_PATH)
     section = parser["vizmic"]
@@ -102,8 +111,13 @@ def load_settings():
             file=sys.stderr,
         )
         band_offsets = [0.0] * len(BAND_CENTERS_HZ)
+    look = section.get("look")
+    if look not in LOOKS:
+        print(f"Unknown look '{look}' in settings.ini -- falling back to '{LOOKS[0]}'.", file=sys.stderr)
+        look = LOOKS[0]
     return {
         "device": section.get("device"),
+        "look": look,
         "gain_bias": section.getfloat("gain_bias"),
         "sensitivity": section.getfloat("sensitivity"),
         "underscan_scale": section.getfloat("underscan_scale"),
@@ -576,6 +590,10 @@ class VizApp:
         self.total_rungs = max(1, self.draw_h // self.led_pitch)
         self.min_rungs = settings["min_rungs"]
 
+        self.look = settings["look"]
+        self.look_index = LOOKS.index(self.look)
+        self._rebuild_look_colors()
+
         self.legend_surfaces, self.legend_y, self.legend_font = self._build_legend()
         self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
 
@@ -630,8 +648,12 @@ class VizApp:
 
     def _build_legend(self):
         """Pre-render one frequency-label surface per band, sized to fit
-        within a bar column -- static per band, so this runs once at
-        startup rather than re-rendering text every frame.
+        within a bar column -- static per band (unless the look changes,
+        see cycle_look()), so this doesn't re-render text every frame.
+        Label color follows the active look: orange for the two
+        amplitude-banded looks (hard/gradient), per-band rainbow hue --
+        matching the on-LED color for that column -- for the two
+        constant-hue-per-column looks (color_off/grey_off).
         """
         labels = [format_freq_label(hz) for hz in self.analyzer.band_centers]
         available_w = self.bar_w - self.bar_gap
@@ -640,13 +662,67 @@ class VizApp:
 
         surfaces = []
         for i, label in enumerate(labels):
-            hue = i / self.num_bars
-            r, g, b = (int(c * 255) for c in hsv_to_rgb(hue, 0.85, 1.0))
-            surf = font.render(label, True, (r, g, b))
+            color = self.col_on[i] if self.col_on is not None else ORANGE
+            surf = font.render(label, True, color)
             x = self.offset_x + int(i * self.bar_w) + (int(self.bar_w - self.bar_gap) - surf.get_width()) // 2
             surfaces.append((surf, x))
         legend_y = self.offset_y + self.draw_h + 4
         return surfaces, legend_y, font
+
+    def _rebuild_look_colors(self):
+        """Precomputes the on/off LED colors for the active look, once
+        (at startup and again whenever cycle_look() changes it) rather
+        than re-deriving them every frame in render()'s hot loop.
+
+        The hard/gradient looks color each rung by its absolute vertical
+        position (row_on/row_off, same for every column -- a fixed VU-
+        meter-style banding, so a shorter bar's top rungs read as
+        whatever color sits at that height, not stretched to always end
+        in red). The color_off/grey_off looks instead color each column
+        by a constant per-band rainbow hue (col_on/col_off, same for
+        every rung in that column) -- only one of the two pairs is set,
+        the other is left None so render() knows which mode it's in.
+        """
+        total = self.total_rungs
+        if self.look in ("hard", "gradient"):
+            self.row_on = []
+            for rung in range(total):
+                frac = rung / max(1, total - 1)  # 0 at bottom rung, 1 at top rung
+                if self.look == "hard":
+                    if frac < 0.5:
+                        color = HARD_GREEN
+                    elif frac < 0.75:
+                        color = HARD_YELLOW
+                    else:
+                        color = HARD_RED
+                else:
+                    hue = (1.0 - frac) / 3.0  # green (bottom) -> yellow -> red (top)
+                    color = tuple(int(c * 255) for c in hsv_to_rgb(hue, 1.0, 1.0))
+                self.row_on.append(color)
+            self.row_off = [OFF_GREY] * total
+            self.col_on = None
+            self.col_off = None
+        else:
+            self.col_on = []
+            self.col_off = []
+            for i in range(self.num_bars):
+                hue = i / self.num_bars
+                on = tuple(int(c * 255) for c in hsv_to_rgb(hue, 0.85, 1.0))
+                self.col_on.append(on)
+                if self.look == "color_off":
+                    self.col_off.append(tuple(int(c * 0.2) for c in on))
+                else:
+                    self.col_off.append(OFF_GREY)
+            self.row_on = None
+            self.row_off = None
+
+    def cycle_look(self, direction):
+        self.look_index = (self.look_index + direction) % len(LOOKS)
+        self.look = LOOKS[self.look_index]
+        print(f"look: {self.look}", file=sys.stderr)
+        save_setting("vizmic", "look", self.look)
+        self._rebuild_look_colors()
+        self.legend_surfaces, self.legend_y, self.legend_font = self._build_legend()
 
     def _build_title(self, legend_font):
         """Pre-render the title bar, centered in the top margin above the
@@ -691,6 +767,10 @@ class VizApp:
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
             save_setting("vizmic", "gain_bias", self.analyzer.gain_bias)
             self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
+        elif code == ecodes.KEY_LEFT:
+            self.cycle_look(-1)
+        elif code == ecodes.KEY_RIGHT:
+            self.cycle_look(1)
         elif code == ecodes.KEY_POWER:
             self.power_dialog_active = True
             self.power_dialog_selection = 0
@@ -770,14 +850,15 @@ class VizApp:
         canvas.blit(self.title_surface, (self.title_x, self.title_y))
         for i, level in enumerate(levels):
             lit_rungs = max(self.min_rungs, int(level * self.total_rungs))
-            if lit_rungs <= 0:
-                continue
-            hue = i / self.num_bars  # rainbow sweep, low freq -> red, high -> violet
-            r, g, b = (int(c * 255) for c in hsv_to_rgb(hue, 0.85, 1.0))
             x = self.offset_x + int(i * self.bar_w)
-            for rung in range(lit_rungs):
+            for rung in range(self.total_rungs):
+                lit = rung < lit_rungs
+                if self.row_on is not None:
+                    color = self.row_on[rung] if lit else self.row_off[rung]
+                else:
+                    color = self.col_on[i] if lit else self.col_off[i]
                 y = self.offset_y + self.draw_h - rung * self.led_pitch - self.led_height
-                pygame.draw.rect(canvas, (r, g, b), (x, y, int(self.bar_w - self.bar_gap), self.led_height))
+                pygame.draw.rect(canvas, color, (x, y, int(self.bar_w - self.bar_gap), self.led_height))
         for surf, x in self.legend_surfaces:
             canvas.blit(surf, (x, self.legend_y))
         if self.power_dialog_active:

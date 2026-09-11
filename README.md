@@ -43,6 +43,7 @@ values for your own hardware.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Adjust gain bias up/down (persisted to `settings.ini`) |
+| `←` / `→` | Cycle the display look/skin (persisted to `settings.ini`) |
 | `Home` | Quit to the app menu |
 | `Q` / `Esc` / `Back` | Quit to the app menu |
 | `Power` | Shutdown/restart confirm dialog |
