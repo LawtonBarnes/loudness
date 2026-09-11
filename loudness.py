@@ -39,6 +39,9 @@ SETTINGS_PATH = BASE_DIR / "settings.ini"
 FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
 SPLASH_PATH = BASE_DIR / "splash.png"  # optional -- see show_splash()
 SPLASH_SECONDS = 5.0
+SPLASH_Y_OFFSET = 40  # pixels to shift the splash image up from dead-center
+SPLASH_VERSION_FONT_SIZE = 22  # matches CHANNEL 38/JOAN JETT's info-HUD text size
+SPLASH_VERSION_GAP = 20  # pixels between the bottom of the splash image and the version text
 
 FRAME_W, FRAME_H = 720, 480
 SAMPLE_RATE = 44100
@@ -238,7 +241,17 @@ def show_splash(fb):
     canvas = pygame.Surface((FRAME_W, FRAME_H))
     canvas.fill(BLACK)
     img_w, img_h = img.get_size()
-    canvas.blit(img, ((FRAME_W - img_w) // 2, (FRAME_H - img_h) // 2))
+    img_x = (FRAME_W - img_w) // 2
+    img_y = (FRAME_H - img_h) // 2 - SPLASH_Y_OFFSET
+    canvas.blit(img, (img_x, img_y))
+
+    # Version number underneath -- same font, size, color and centering
+    # as the CHANNEL 38/JOAN JETT splash version readout.
+    version_font = pygame.font.Font(str(FONT_PATH), SPLASH_VERSION_FONT_SIZE)
+    version_surf = version_font.render(f"VERSION {VERSION}", True, ORANGE)
+    canvas.blit(version_surf, ((FRAME_W - version_surf.get_width()) // 2,
+                                img_y + img_h + SPLASH_VERSION_GAP))
+
     fb.write_surface(canvas)
     time.sleep(SPLASH_SECONDS)
 
