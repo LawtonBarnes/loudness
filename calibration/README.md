@@ -137,3 +137,46 @@ this feature existed.
 **Re-run this whole test if a mic is ever swapped or physically moved**
 -- these offsets are tied to that specific mic unit's real hardware
 response, not a property of the puppet itself.
+
+## 2026-09-11 re-calibration (mics relocated + per-unit fans added)
+
+Triggered by two physical changes since the 2026-09-02 run: the mics
+moved to a new location, and the shared USB cooling fan (a suspected
+confound in the original HVAC comparison) was replaced with per-unit
+fans mounted in the stack. Ran the full procedure from scratch --
+baseline reset (100% ALSA gain, `gain_bias = 0.0`, `band_offsets`
+zeroed on all 4 first) rather than refining the old profile, since a
+mic relocation invalidates any position-dependent prior tuning.
+
+**HVAC no longer registers at this mic location.** `quiet` vs `hvac`
+readings came back within ~1dB of each other on all 4 puppets (down
+in the mic self-noise floor) -- re-tested once after confirming HVAC
+was actually running, same result both times. This is a real
+consequence of the relocation (mics are now further from the HVAC
+source), not a measurement error, and it means `gain_bias` needed no
+AC-noise correction this round -- left at 0.0 on all 4.
+
+**Tone-sweep spread is smaller than the 2026-09-02 run.** Max raw
+per-band deviation from the fleet average is now P1's -5.4dB at 8kHz
+(previously P1's -10.4dB at 4kHz was the largest) -- no band on any
+puppet needed the +/-12dB cap.
+
+| Band | P1 | P2 | P3 | P4 |
+|------|-----|-----|-----|-----|
+| 125 Hz  | +0.9  | -0.3  | +0.1  | -0.7  |
+| 250 Hz  | +0.6  | -0.2  | +0.2  | -0.6  |
+| 500 Hz  | +2.1  | +0.2  | -0.3  | -2.0  |
+| 750 Hz  | +2.4  | +0.3  | -0.4  | -2.3  |
+| 1 kHz   | -2.4  | -2.0  | +1.2  | +3.1  |
+| 1.5 kHz | -1.6  | -1.3  | +1.1  | +1.8  |
+| 2 kHz   | +1.4  | -0.8  | +0.2  | -0.9  |
+| 4 kHz   | +2.8  | +2.6  | -4.1  | -1.3  |
+| 8 kHz   | -5.4  | +0.0  | +3.0  | +2.3  |
+
+Applied to each puppet's live `settings.ini` (`gain_bias = 0.0` on all
+4, `band_offsets` per the table above). `calibration_data.csv` now
+holds both the 2026-09-02 and 2026-09-11 runs appended back to back --
+`build_profile.py` only uses the most recent `tone` rows per
+puppet/band (dict overwrite on read, last-appended wins), so old runs
+stay in the CSV for drift history without affecting the derived
+profile.
