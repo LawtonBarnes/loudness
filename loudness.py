@@ -32,13 +32,14 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.8"
+VERSION = "1.9"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
 FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
 SPLASH_PATH = BASE_DIR / "splash.png"  # optional -- see show_splash()
 SPLASH_SECONDS = 5.0
+LOGO_PATH = BASE_DIR / "metalshop-logo.png"  # ABOUT screen -- see draw_about_screen()
 SPLASH_Y_OFFSET = 40  # pixels to shift the splash image up from dead-center
 SPLASH_VERSION_FONT_SIZE = 22  # matches CHANNEL 38/JOAN JETT's info-HUD text size
 SPLASH_VERSION_GAP = 20  # pixels between the bottom of the splash image and the version text
@@ -254,6 +255,58 @@ def show_splash(fb):
 
     fb.write_surface(canvas)
     time.sleep(SPLASH_SECONDS)
+
+
+# ABOUT screen (2026-09-22, fleet-wide -- same layout in every app except
+# WX, duplicated per this codebase's no-shared-library convention). BACK
+# toggles it from the app's home level. Title top center, settings in the
+# middle, METAL SHOP logo bottom center. The logo is square-pixel art, so
+# it's stretched horizontally by 720/640 to look right on the CRT's
+# narrower-than-square 720x480 pixels.
+ABOUT_MARGIN_Y = 48  # keeps title/logo inside the CRT's visible area
+ABOUT_LINE_GAP = 8
+ABOUT_COLUMN_GAP = 16
+LOGO_X_STRETCH = 720 / 640
+
+
+def load_about_logo():
+    try:
+        img = pygame.image.load(str(LOGO_PATH)).convert_alpha()
+    except (pygame.error, OSError) as exc:
+        print(f"Logo load failed: {exc}", file=sys.stderr)
+        return None
+    w, h = img.get_size()
+    return pygame.transform.smoothscale(img, (round(w * LOGO_X_STRETCH), h))
+
+
+def draw_about_screen(canvas, title_font, body_font, logo, title, rows):
+    """`rows` is a list of (label, value) -- labels right-aligned in an
+    orange column, values left-aligned in white beside them, the block
+    centered in the space between the title and the logo. A row with an
+    empty label continues the previous row's value column."""
+    frame_w, frame_h = canvas.get_size()
+    canvas.fill(BLACK)
+    title_surf = title_font.render(title, True, ORANGE)
+    canvas.blit(title_surf, ((frame_w - title_surf.get_width()) // 2, ABOUT_MARGIN_Y))
+    top = ABOUT_MARGIN_Y + title_surf.get_height()
+    bottom = frame_h - ABOUT_MARGIN_Y
+    if logo is not None:
+        bottom -= logo.get_height()
+        canvas.blit(logo, ((frame_w - logo.get_width()) // 2, bottom))
+    if not rows:
+        return
+    label_surfs = [body_font.render(label, True, ORANGE) if label else None for label, _ in rows]
+    value_surfs = [body_font.render(str(value), True, WHITE) for _, value in rows]
+    label_w = max((l.get_width() for l in label_surfs if l), default=0)
+    value_w = max(v.get_width() for v in value_surfs)
+    line_h = body_font.get_linesize() + ABOUT_LINE_GAP
+    x0 = (frame_w - (label_w + ABOUT_COLUMN_GAP + value_w)) // 2
+    y = top + (bottom - top - line_h * len(rows)) // 2
+    for label_surf, value_surf in zip(label_surfs, value_surfs):
+        if label_surf:
+            canvas.blit(label_surf, (x0 + label_w - label_surf.get_width(), y))
+        canvas.blit(value_surf, (x0 + label_w + ABOUT_COLUMN_GAP, y))
+        y += line_h
 
 
 def find_keyboard_devices():
@@ -561,6 +614,7 @@ class SpectrumAnalyzer:
 class VizApp:
     def __init__(self):
         settings = load_settings()
+        self.settings = settings
         self._quit_requested = False
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -612,6 +666,9 @@ class VizApp:
 
         self.osd_font = pygame.font.Font(str(FONT_PATH), 36)
         self.option_font = pygame.font.Font(str(FONT_PATH), 32)
+        self.about_body_font = pygame.font.Font(str(FONT_PATH), 26)
+        self.about_logo = load_about_logo()
+        self.about_canvas = None  # built once per BACK press -- see toggle_about()
         self.power_dialog_active = False
         self.power_dialog_selection = 0  # index into POWER_OPTIONS, defaults to NO
         self.pending_power_action = None  # None, "shutdown", or "restart"
@@ -760,16 +817,48 @@ class VizApp:
     def _handle_signal(self, signum, frame):
         self._quit_requested = True
 
+    def toggle_about(self):
+        """BACK (2026-09-22) -- shows/hides the ABOUT screen instead of
+        quitting. Built once per toggle rather than every frame, since
+        its contents can't change while it's up (Up/Down gain changes
+        are ignored then). The mic keeps being read underneath so the
+        analyzer's auto-gain stays settled."""
+        if self.about_canvas is not None:
+            self.about_canvas = None
+            return
+        s = self.settings
+        canvas = pygame.Surface((FRAME_W, FRAME_H))
+        draw_about_screen(canvas, self.osd_font, self.about_body_font, self.about_logo,
+                          f"LOUDNESS {VERSION}", [
+                              ("LOOK", self.look.upper().replace("_", " ")),
+                              ("GAIN BIAS", f"{self.analyzer.gain_bias:+.1f} DB"),
+                              ("SENSITIVITY", f"{s['sensitivity']:g}"),
+                              ("SQUELCH", f"{s['squelch_db']:g} DB"),
+                              ("NOISE GATE", f"{s['noise_gate_db']:g} DB"),
+                              ("RANGE", f"{s['low_freq']:g}-{s['high_freq']:g} HZ"),
+                              ("MIC", s["device"].upper()),
+                          ])
+        self.about_canvas = canvas
+
     def handle_keycode(self, code):
-        # Home is distinct from Back/Menu/Q/Esc -- see menu.py's
+        # Home is distinct from Menu/Q/Esc -- see menu.py's
         # launch_app() and bars.py's handle_keycode for the full rationale
         # (Home skips the App Menu and jumps straight to Health Monitor).
+        # Back toggles ABOUT instead of quitting (2026-09-22); while it's
+        # up, only Back/Home/Power/Q/Esc/Menu do anything.
         if self.power_dialog_active:
             return self.handle_power_dialog_keycode(code)
         if code in (ecodes.KEY_HOMEPAGE, ecodes.KEY_HOME):
             return "quit_home"
-        elif code in (ecodes.KEY_Q, ecodes.KEY_ESC, ecodes.KEY_BACK, ecodes.KEY_COMPOSE):
+        elif code in (ecodes.KEY_Q, ecodes.KEY_ESC, ecodes.KEY_COMPOSE):
             return "quit"
+        elif code == ecodes.KEY_BACK:
+            self.toggle_about()
+        elif code == ecodes.KEY_POWER:
+            self.power_dialog_active = True
+            self.power_dialog_selection = 0
+        elif self.about_canvas is not None:
+            return None
         elif code == ecodes.KEY_UP:
             self.analyzer.gain_bias += 3.0
             print(f"gain_bias: {self.analyzer.gain_bias:+.0f}dB", file=sys.stderr)
@@ -784,9 +873,6 @@ class VizApp:
             self.cycle_look(-1)
         elif code == ecodes.KEY_RIGHT:
             self.cycle_look(1)
-        elif code == ecodes.KEY_POWER:
-            self.power_dialog_active = True
-            self.power_dialog_selection = 0
 
     def handle_power_dialog_keycode(self, code):
         if code in (ecodes.KEY_LEFT, ecodes.KEY_UP):
@@ -858,6 +944,12 @@ class VizApp:
         canvas.blit(box, ((FRAME_W - box.get_width()) // 2, (FRAME_H - box.get_height()) // 2))
 
     def render(self, levels):
+        if self.about_canvas is not None:
+            canvas = self.about_canvas.copy()
+            if self.power_dialog_active:
+                self.draw_power_dialog(canvas)
+            self.fb.write_surface(canvas)
+            return
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
         canvas.blit(self.title_surface, (self.title_x, self.title_y))
