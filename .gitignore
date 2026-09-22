@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.bak*
 splash.png
+
+# Per-machine settings -- each host keeps its own; see settings.example.ini
+settings.ini

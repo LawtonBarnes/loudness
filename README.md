@@ -112,3 +112,13 @@ fleet instead of standalone, skip steps 4/6 -- install alongside
 [STRINGS](https://github.com/LawtonBarnes/strings) and assign it from
 [SCRUTE](https://github.com/LawtonBarnes/scrutinizer) instead of a
 manual launcher/autologin.
+
+## Per-machine settings
+
+`settings.ini` is per-machine and not tracked in git (each fleet host keeps
+its own values, e.g. calibration or preferences), so `git pull` never
+conflicts with it. A fresh install copies the template first:
+
+    cp settings.example.ini settings.ini
+
+If `settings.ini` is missing, the app falls back to its built-in defaults.
