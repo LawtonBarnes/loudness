@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.10"
+VERSION = "1.11"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -64,23 +64,58 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
-LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12")
+LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights")
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
 HARD_RED = (210, 30, 30)
 
-# ORGAN-12 look (2026-10-14) -- a 1970s Radio Shack-style color organ: three
-# full-frame lamp layers (red/green/blue, artwork in organ12/), each driven by
-# one frequency group and added together on black like overlapping colored
-# floodlights. Band groups split BAND_CENTERS_HZ by center frequency:
-# bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
-ORGAN_DIR = BASE_DIR / "organ12"
-ORGAN_LAMPS = (  # (artwork file, highest band center in this group, Hz)
-    ("ORGAN-12_Red.png", 400),
-    ("ORGAN-12_Green.png", 3000),
-    ("ORGAN-12_Blue.png", float("inf")),
-)
+# Lamp-show looks -- full-frame artwork layers ("lamps"), each driven by one
+# frequency group and flashed on its beats (see LampShow), added together on
+# black (plus an optional always-on background) like overlapping lights. Band
+# groups split BAND_CENTERS_HZ by center frequency: each lamp takes every
+# band below its Hz limit not already claimed by an earlier lamp. Optional
+# per-show keys: "warm"/"cool" override LAMP_WARM/LAMP_COOL, "hold" switches
+# the lamps to triggered flashes (see LampShow.render()), "warm_dim" tints
+# a dimming lamp toward orange/red like a cooling filament (LAMP_WARM_DIM),
+# "underscan" shrinks all the show's art around the frame center, and
+# "regions" blits/caches only the lamps' own bounding rects (alpha-mask
+# components) rather than the full frame -- only for art made of a few solid
+# shapes; ORGAN-12's halftone dots would make thousands of tiny rects.
+#   organ-12 (2026-10-14): a 1970s Radio Shack-style color organ.
+#     Bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
+#   headlights (2026-10-14): a 4x4 grid of sealed-beam headlights, always shown
+#     dark (background), each of four patterns lighting its own 4 of the 16.
+#     Bass (125/250) -> diagonal, low mids (500/750) -> anti-diagonal, high
+#     mids (1K-2K) -> left/right pairs, treble (4K/8K) -> top/bottom pairs.
+#     Triggered flashes held at full with a slow warm glow-out, since lamps
+#     that just followed the beat read as flicker and rarely hit full.
+LAMP_SHOWS = {
+    "organ-12": {
+        "dir": "organ12",
+        "lamps": (  # (artwork file, Hz limit for this lamp's band group)
+            ("ORGAN-12_Red.png", 400),
+            ("ORGAN-12_Green.png", 3000),
+            ("ORGAN-12_Blue.png", float("inf")),
+        ),
+    },
+    "headlights": {
+        "dir": "headlights",
+        "background": "BACKGROUND.png",
+        "lamps": (
+            ("PATTERN1.png", 400),
+            ("PATTERN2.png", 900),
+            ("PATTERN3.png", 3000),
+            ("PATTERN4.png", float("inf")),
+        ),
+        "warm": 0.6,
+        "cool": 0.15,
+        "hold": 8,
+        "warm_dim": True,
+        "underscan": 0.95,
+        "regions": True,
+    },
+}
 # Beat response (2026-10-14): a lamp lights on how far its group jumps above
 # its own recent average, measured in that group's own recent standard
 # deviations -- not on raw level. With music playing, raw level (post
@@ -89,14 +124,20 @@ ORGAN_LAMPS = (  # (artwork file, highest band center in this group, Hz)
 # 0..1, so neither raw level nor a fixed-size jump threshold ever let the
 # lamps go dark. Tuned offline against ~28s of recorded music: each lamp is
 # fully dark ~25% of the time and hits full ~2x/sec.
-ORGAN_BASELINE_BLEND = 0.05  # per-frame blend of the running mean/variance (~1s memory at ~24fps)
-ORGAN_MIN_STD = 0.01  # floor on the deviation, so silence/steady hum can't read as beats
-ORGAN_BEAT_ON = 0.9  # deviations above average where a lamp starts to light...
-ORGAN_BEAT_FULL = 1.5  # ...and where it's at full brightness
+LAMP_BASELINE_BLEND = 0.05  # per-frame blend of the running mean/variance (~1s memory at ~24fps)
+LAMP_MIN_STD = 0.01  # floor on the deviation, so silence/steady hum can't read as beats
+LAMP_BEAT_ON = 0.9  # deviations above average where a lamp starts to light...
+LAMP_BEAT_FULL = 1.5  # ...and where it's at full brightness
 # Incandescent-style lag: filaments flash on instantly and glow out over a few frames.
-ORGAN_WARM = 1.0  # per-frame blend toward a brighter target
-ORGAN_COOL = 0.35  # per-frame blend toward a dimmer target
-ORGAN_STEPS = 24  # brightness levels per lamp, each cached as a pre-dimmed frame (~1.4MB)
+LAMP_WARM = 1.0  # per-frame blend toward a brighter target
+LAMP_COOL = 0.35  # per-frame blend toward a dimmer target
+LAMP_HOLD_TRIGGER = 1.2  # "hold" shows: deviations above average that fire a flash
+LAMP_HOLD_REARM = 0.15  # "hold" shows: brightness a lamp must cool below before firing again
+LAMP_STEPS = 24  # brightness levels per lamp, each cached as a pre-dimmed copy (~1.4MB full-frame)
+# Per-channel exponents on brightness for "warm_dim" shows: red dims linearly,
+# green and blue faster, so a half-lit lamp reads orange and a nearly-out one
+# deep red, while full brightness is untouched.
+LAMP_WARM_DIM = (1.0, 1.6, 2.6)
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -656,8 +697,139 @@ class SpectrumAnalyzer:
         rising = targets > self.displayed
         blend = np.where(rising, ATTACK, DECAY)
         self.displayed += (targets - self.displayed) * blend
-        self.raw_levels = targets  # unsmoothed, for ORGAN-12's beat detection
+        self.raw_levels = targets  # unsmoothed, for LampShow's beat detection
         return self.displayed
+
+
+class LampShow:
+    """One lamp-show look (see LAMP_SHOWS): loads its artwork once at
+    startup and renders a frame from the analyzer's unsmoothed levels.
+
+    Each lamp flashes on its group's beats -- how far the loudest band in
+    the group jumps above its own ~1s running average, in units of its own
+    running standard deviation -- then goes fully dark between them (see
+    LAMP_BEAT_ON/FULL). A warm-up/cool-down lag (LAMP_WARM/COOL, or the
+    show's own "warm"/"cool") keeps the flashes smooth like incandescent
+    bulbs rather than strobing. Raw levels, not the displayed ones, since
+    the bars' DECAY smoothing would smear the gaps between beats.
+
+    Each lamp is premultiplied onto black and added to the frame. Brightness
+    is quantized to LAMP_STEPS levels, each a pre-dimmed copy of the lamp
+    built (with a BLEND_MULT fill, optionally warm-tinted) the first time
+    it's needed -- so a frame is just plain/BLEND_ADD blits (~14ms on a
+    Pi 3B for ORGAN-12's three full-frame lamps), where dimming on the fly
+    measured ~22ms *per lamp*. Missing artwork leaves `ok` False and the
+    look drops out of the cycle."""
+
+    def __init__(self, name, spec, band_centers):
+        self.name = name
+        self.warm = spec.get("warm", LAMP_WARM)
+        self.cool = spec.get("cool", LAMP_COOL)
+        self.hold = spec.get("hold", 0)
+        self.warm_dim = spec.get("warm_dim", False)
+        self.underscan = spec.get("underscan", 1.0)
+        self.background = None
+        self.regions = []  # per lamp, the rects it's blitted/cached in
+        self.cache = []  # per lamp, {step: [pre-dimmed surface per region]}
+        self.groups = []
+        n = len(spec["lamps"])
+        self.brightness = np.zeros(n)
+        self.baseline = np.zeros(n)
+        self.var = np.full(n, LAMP_MIN_STD ** 2)
+        self.hold_left = np.zeros(n, dtype=int)
+        art_dir = BASE_DIR / spec["dir"]
+        centers = np.array(band_centers)
+        lower = 0
+        try:
+            if spec.get("background"):
+                self.background = self._load(art_dir / spec["background"])
+            for filename, upper in spec["lamps"]:
+                art = self._load_alpha(art_dir / filename)
+                layer = pygame.Surface((FRAME_W, FRAME_H))
+                layer.fill(BLACK)
+                layer.blit(art, (0, 0))
+                if spec.get("regions"):
+                    # Skips frame-sized components -- e.g. the faint 1px
+                    # border Photoshop left around every HEADLIGHTS pattern.
+                    rects = pygame.mask.from_surface(art, 8).get_bounding_rects()
+                    rects = [r for r in rects if r.w * r.h < FRAME_W * FRAME_H // 4]
+                else:
+                    rects = [layer.get_rect()]
+                self.regions.append(rects)
+                self.cache.append({LAMP_STEPS: [layer.subsurface(r).copy() for r in rects]})
+                self.groups.append(np.flatnonzero((centers >= lower) & (centers < upper)))
+                lower = upper
+            self.ok = True
+        except (pygame.error, OSError) as exc:
+            print(f"{name} artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
+            self.ok = False
+
+    def _load_alpha(self, path):
+        """Loads art at frame size, shrunk by `underscan` around the center
+        onto a transparent frame-sized surface."""
+        art = pygame.image.load(str(path)).convert_alpha()
+        w, h = round(FRAME_W * self.underscan), round(FRAME_H * self.underscan)
+        if art.get_size() != (w, h):
+            art = pygame.transform.smoothscale(art, (w, h))
+        if (w, h) == (FRAME_W, FRAME_H):
+            return art
+        framed = pygame.Surface((FRAME_W, FRAME_H), pygame.SRCALPHA)
+        framed.blit(art, ((FRAME_W - w) // 2, (FRAME_H - h) // 2))
+        return framed
+
+    def _load(self, path):
+        frame = pygame.Surface((FRAME_W, FRAME_H))
+        frame.fill(BLACK)
+        frame.blit(self._load_alpha(path), (0, 0))
+        return frame
+
+    def _dimmed(self, lamp, step):
+        cache = self.cache[lamp]
+        if step not in cache:
+            level = step / LAMP_STEPS
+            exps = LAMP_WARM_DIM if self.warm_dim else (1.0, 1.0, 1.0)
+            tint = tuple(round(255 * level ** e) for e in exps)
+            dimmed = []
+            for full in cache[LAMP_STEPS]:
+                part = full.copy()
+                part.fill(tint, special_flags=pygame.BLEND_MULT)
+                dimmed.append(part)
+            cache[step] = dimmed
+        return cache[step]
+
+    def render(self, canvas, raw):
+        """Expects canvas already filled black."""
+        first = self.background is None
+        if not first:
+            canvas.blit(self.background, (0, 0))
+        for i, group in enumerate(self.groups):
+            level = float(raw[group].max()) if group.size else 0.0
+            excess = level - self.baseline[i]
+            self.baseline[i] += excess * LAMP_BASELINE_BLEND
+            self.var[i] += (excess * excess - self.var[i]) * LAMP_BASELINE_BLEND
+            z = excess / max(np.sqrt(self.var[i]), LAMP_MIN_STD)
+            if self.hold:
+                # Triggered (2026-10-14, HEADLIGHTS): a beat past LAMP_HOLD_TRIGGER
+                # drives the lamp to full and holds it there for `hold` frames,
+                # then it glows out -- and can't fire again until it's cooled
+                # below LAMP_HOLD_REARM, which caps the flash rate at something
+                # an incandescent could plausibly do. Tuned offline against
+                # recorded music: each pattern hits full ~1x/sec, dark between.
+                if z >= LAMP_HOLD_TRIGGER and not self.hold_left[i] and self.brightness[i] < LAMP_HOLD_REARM:
+                    self.hold_left[i] = self.hold
+                target = 1.0 if self.hold_left[i] else 0.0
+                self.hold_left[i] = max(0, self.hold_left[i] - 1)
+            else:
+                target = min(1.0, max(0.0, (z - LAMP_BEAT_ON) / (LAMP_BEAT_FULL - LAMP_BEAT_ON)))
+            rate = self.warm if target > self.brightness[i] else self.cool
+            self.brightness[i] += (target - self.brightness[i]) * rate
+            step = min(LAMP_STEPS, int(round(self.brightness[i] * LAMP_STEPS)))
+            if step <= 0:
+                continue
+            flags = 0 if first else pygame.BLEND_ADD
+            first = False
+            for rect, part in zip(self.regions[i], self._dimmed(i, step)):
+                canvas.blit(part, rect.topleft, special_flags=flags)
 
 
 class VizApp:
@@ -709,8 +881,9 @@ class VizApp:
         self.look = settings["look"]
         self.look_index = LOOKS.index(self.look)
         self._rebuild_look_colors()
-        self._load_organ()
-        if self.look == "organ-12" and not self.organ_layers:
+        self.lamp_shows = {name: LampShow(name, spec, self.analyzer.band_centers)
+                           for name, spec in LAMP_SHOWS.items()}
+        if self.look in self.lamp_shows and not self.lamp_shows[self.look].ok:
             self.look_index = 0
             self.look = LOOKS[0]
             self._rebuild_look_colors()
@@ -826,8 +999,8 @@ class VizApp:
             self.row_off = [OFF_GREY] * total
             self.col_on = None
             self.col_off = None
-        elif self.look == "organ-12":
-            self.row_on = self.row_off = self.col_on = self.col_off = None  # see render_organ()
+        elif self.look in LAMP_SHOWS:
+            self.row_on = self.row_off = self.col_on = self.col_off = None  # see LampShow
         else:
             self.col_on = []
             self.col_off = []
@@ -842,82 +1015,9 @@ class VizApp:
             self.row_on = None
             self.row_off = None
 
-    def _load_organ(self):
-        """Loads the ORGAN-12 lamp artwork once at startup, each PNG's alpha
-        flattened onto black (premultiplied). Brightness is quantized to
-        ORGAN_STEPS levels, each a pre-dimmed copy of the lamp built the
-        first time it's needed (see _organ_step()), so a frame is just one
-        plain blit plus two BLEND_ADD blits (~15ms on a Pi 3B) -- dimming
-        on the fly with a BLEND_MULT fill measured ~22ms *per lamp*.
-        Missing artwork drops the look from the cycle rather than crashing."""
-        self.organ_layers = []
-        self.organ_groups = []
-        self.organ_cache = []
-        self.organ_brightness = np.zeros(len(ORGAN_LAMPS))
-        self.organ_baseline = np.zeros(len(ORGAN_LAMPS))
-        self.organ_var = np.full(len(ORGAN_LAMPS), ORGAN_MIN_STD ** 2)
-        centers = np.array(self.analyzer.band_centers)
-        lower = 0
-        try:
-            for filename, upper in ORGAN_LAMPS:
-                art = pygame.image.load(str(ORGAN_DIR / filename)).convert_alpha()
-                if art.get_size() != (FRAME_W, FRAME_H):
-                    art = pygame.transform.smoothscale(art, (FRAME_W, FRAME_H))
-                layer = pygame.Surface((FRAME_W, FRAME_H))
-                layer.fill(BLACK)
-                layer.blit(art, (0, 0))
-                self.organ_layers.append(layer)
-                self.organ_cache.append({ORGAN_STEPS: layer})
-                self.organ_groups.append(np.flatnonzero((centers >= lower) & (centers < upper)))
-                lower = upper
-        except (pygame.error, OSError) as exc:
-            print(f"ORGAN-12 artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
-            self.organ_layers = []
-
-    def _organ_step(self, lamp, step):
-        cache = self.organ_cache[lamp]
-        if step not in cache:
-            layer = self.organ_layers[lamp]
-            dimmed = pygame.Surface((FRAME_W, FRAME_H))
-            dimmed.fill(BLACK)
-            layer.set_alpha(round(255 * step / ORGAN_STEPS))
-            dimmed.blit(layer, (0, 0))
-            layer.set_alpha(None)
-            cache[step] = dimmed
-        return cache[step]
-
-    def render_organ(self, canvas, levels):
-        """ORGAN-12 look: each lamp flashes on its group's beats -- how far
-        the loudest band in the group jumps above its own ~1s running
-        average, in units of its own running standard deviation -- then
-        goes fully dark between them (see ORGAN_BEAT_ON/FULL). A warm-up/cool-down lag (ORGAN_WARM/COOL) keeps
-        the flashes smooth like incandescent bulbs rather than strobing.
-        Reads the analyzer's unsmoothed levels (its DECAY smoothing would
-        smear the gaps between beats). Expects canvas already filled black."""
-        raw = self.analyzer.raw_levels
-        first = True
-        for i, group in enumerate(self.organ_groups):
-            level = float(raw[group].max()) if group.size else 0.0
-            excess = level - self.organ_baseline[i]
-            self.organ_baseline[i] += excess * ORGAN_BASELINE_BLEND
-            self.organ_var[i] += (excess * excess - self.organ_var[i]) * ORGAN_BASELINE_BLEND
-            z = excess / max(np.sqrt(self.organ_var[i]), ORGAN_MIN_STD)
-            target = min(1.0, max(0.0, (z - ORGAN_BEAT_ON) / (ORGAN_BEAT_FULL - ORGAN_BEAT_ON)))
-            rate = ORGAN_WARM if target > self.organ_brightness[i] else ORGAN_COOL
-            self.organ_brightness[i] += (target - self.organ_brightness[i]) * rate
-            step = int(round(self.organ_brightness[i] * ORGAN_STEPS))
-            if step <= 0:
-                continue
-            lamp = self._organ_step(i, min(step, ORGAN_STEPS))
-            if first:
-                canvas.blit(lamp, (0, 0))
-                first = False
-            else:
-                canvas.blit(lamp, (0, 0), special_flags=pygame.BLEND_ADD)
-
     def cycle_look(self, direction):
         self.look_index = (self.look_index + direction) % len(LOOKS)
-        if LOOKS[self.look_index] == "organ-12" and not self.organ_layers:
+        while LOOKS[self.look_index] in self.lamp_shows and not self.lamp_shows[LOOKS[self.look_index]].ok:
             self.look_index = (self.look_index + direction) % len(LOOKS)
         self.look = LOOKS[self.look_index]
         print(f"look: {self.look}", file=sys.stderr)
@@ -1083,8 +1183,8 @@ class VizApp:
             return
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
-        if self.look == "organ-12":
-            self.render_organ(canvas, levels)
+        if self.look in self.lamp_shows:
+            self.lamp_shows[self.look].render(canvas, self.analyzer.raw_levels)
             if self.power_dialog_active:
                 self.draw_power_dialog(canvas)
             self.fb.write_surface(canvas)

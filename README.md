@@ -40,15 +40,25 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle five display looks, persisted as `look` in `settings.ini`:
-`hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), and
-`organ-12` -- a 1970s Radio Shack-style color organ. Twelve full-frame
-lamps (artwork in `organ12/`) in three colors, added together on black
-like overlapping floodlights: red follows bass (125/250Hz), green the
-mids (500Hz-2K), blue the treble (4K/8K). Each lamp fires on its group's
-*beats* -- jumps above its own ~1s running average, measured in its own
-running standard deviations -- and goes fully dark between them, with a
-quick incandescent-style glow-out.
+`←`/`→` cycle six display looks, persisted as `look` in `settings.ini`:
+`hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), plus
+two "lamp shows" built from full-frame artwork (configured in
+`loudness.py`'s `LAMP_SHOWS` table):
+
+- `organ-12` -- a 1970s Radio Shack-style color organ. Twelve lamps
+  (artwork in `organ12/`) in three colors, added together on black like
+  overlapping floodlights: red follows bass (125/250Hz), green the mids
+  (500Hz-2K), blue the treble (4K/8K).
+- `headlights` -- a 4x4 grid of sealed-beam headlights (artwork in
+  `headlights/`), always shown dark, with four patterns of 4 lamps each:
+  bass lights the diagonal, low mids (500/750Hz) the anti-diagonal, high
+  mids (1K-2K) the left/right pairs, treble (4K/8K) the top/bottom pairs.
+
+Each lamp fires on its group's *beats* -- jumps above its own ~1s running
+average, measured in its own running standard deviations -- and goes
+fully dark between them. ORGAN-12 flashes and glows out quickly;
+HEADLIGHTS holds each flash at full for about a quarter second, then
+glows out slowly, dimming toward orange/red like a cooling filament.
 
 ## Keyboard / remote controls
 
