@@ -18,6 +18,7 @@ import re
 import select
 import selectors
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -32,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.9"
+VERSION = "1.10"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -63,11 +64,39 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
-LOOKS = ("hard", "gradient", "color_off", "grey_off")
+LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12")
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
 HARD_RED = (210, 30, 30)
+
+# ORGAN-12 look (2026-10-14) -- a 1970s Radio Shack-style color organ: three
+# full-frame lamp layers (red/green/blue, artwork in organ12/), each driven by
+# one frequency group and added together on black like overlapping colored
+# floodlights. Band groups split BAND_CENTERS_HZ by center frequency:
+# bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
+ORGAN_DIR = BASE_DIR / "organ12"
+ORGAN_LAMPS = (  # (artwork file, highest band center in this group, Hz)
+    ("ORGAN-12_Red.png", 400),
+    ("ORGAN-12_Green.png", 3000),
+    ("ORGAN-12_Blue.png", float("inf")),
+)
+# Beat response (2026-10-14): a lamp lights on how far its group jumps above
+# its own recent average, measured in that group's own recent standard
+# deviations -- not on raw level. With music playing, raw level (post
+# auto-gain, on a dB scale) sits near the top constantly and barely moves:
+# recorded on P1, the treble group's whole swing was a std of ~0.02 out of
+# 0..1, so neither raw level nor a fixed-size jump threshold ever let the
+# lamps go dark. Tuned offline against ~28s of recorded music: each lamp is
+# fully dark ~25% of the time and hits full ~2x/sec.
+ORGAN_BASELINE_BLEND = 0.05  # per-frame blend of the running mean/variance (~1s memory at ~24fps)
+ORGAN_MIN_STD = 0.01  # floor on the deviation, so silence/steady hum can't read as beats
+ORGAN_BEAT_ON = 0.9  # deviations above average where a lamp starts to light...
+ORGAN_BEAT_FULL = 1.5  # ...and where it's at full brightness
+# Incandescent-style lag: filaments flash on instantly and glow out over a few frames.
+ORGAN_WARM = 1.0  # per-frame blend toward a brighter target
+ORGAN_COOL = 0.35  # per-frame blend toward a dimmer target
+ORGAN_STEPS = 24  # brightness levels per lamp, each cached as a pre-dimmed frame (~1.4MB)
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -79,6 +108,7 @@ EXIT_GOTO_HOME = 42
 KDSETMODE = 0x4B3A
 KD_TEXT = 0x00
 KD_GRAPHICS = 0x01
+FBIO_WAITFORVSYNC = 0x40044620  # _IOW('F', 0x20, __u32)
 
 ATTACK = 0.6   # blend factor toward a rising target (fast rise)
 DECAY = 0.08   # blend factor toward a falling target (slower fall, less flicker)
@@ -196,20 +226,37 @@ class FrameBuffer:
         self.mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
         if self.bpp not in (16, 32):
             raise RuntimeError(f"Unsupported framebuffer depth: {self.bpp}bpp")
+        self.rgb565 = None  # built on first write -- see write_surface()
+        # Vsync (2026-10-14): writing mid-scanout showed as horizontal tearing
+        # -- top of the field old frame, bottom new -- glaring on ORGAN-12's
+        # full-screen flashes. Waiting for vblank first and then writing (the
+        # whole-frame copy measured ~0.9ms on a Pi 3B, far quicker than the
+        # beam's ~16.7ms trip down the field) keeps every write ahead of the
+        # beam. Falls back to unsynced writes if the driver lacks the ioctl.
+        self.vsync = True
 
     def write_surface(self, surface):
         if surface.get_size() != (self.width, self.height):
             surface = pygame.transform.scale(surface, (self.width, self.height))
-        arr = pygame.surfarray.pixels3d(surface).transpose(1, 0, 2)  # (H, W, RGB) uint8
         if self.bpp == 16:
-            r = arr[:, :, 0].astype(np.uint16) >> 3
-            g = arr[:, :, 1].astype(np.uint16) >> 2
-            b = arr[:, :, 2].astype(np.uint16) >> 3
-            raw = ((r << 11) | (g << 5) | b).astype("<u2").tobytes()
+            # SDL's own blit into an RGB565 surface (2026-10-14) -- bit-identical
+            # to the old numpy >>3/>>2 packing, but ~4ms/frame instead of ~32ms
+            # on a Pi 3B, which was most of the 30fps frame budget on its own.
+            if self.rgb565 is None:
+                self.rgb565 = pygame.Surface((self.width, self.height), 0, 16)
+            self.rgb565.blit(surface, (0, 0))
+            raw = self.rgb565.get_buffer().raw
         else:
+            arr = pygame.surfarray.pixels3d(surface).transpose(1, 0, 2)  # (H, W, RGB) uint8
             alpha = np.zeros((self.height, self.width, 1), dtype=np.uint8)
             raw = np.concatenate([arr[:, :, ::-1], alpha], axis=2).astype(np.uint8).tobytes()
 
+        if self.vsync:
+            try:
+                fcntl.ioctl(self.fd, FBIO_WAITFORVSYNC, struct.pack("I", 0))
+            except OSError as exc:
+                print(f"FBIO_WAITFORVSYNC unavailable ({exc}) -- writing unsynced.", file=sys.stderr)
+                self.vsync = False
         if self.stride == self.row_bytes:
             self.mm.seek(0)
             self.mm.write(raw)
@@ -568,6 +615,7 @@ class SpectrumAnalyzer:
         self.band_masks = [(self.freqs >= edges[i]) & (self.freqs < edges[i + 1]) for i in range(num_bars)]
         self.band_centers = centers
         self.displayed = np.zeros(num_bars)
+        self.raw_levels = np.zeros(num_bars)
 
     def update(self, samples):
         magnitudes = np.abs(np.fft.rfft(samples * self.window))
@@ -608,6 +656,7 @@ class SpectrumAnalyzer:
         rising = targets > self.displayed
         blend = np.where(rising, ATTACK, DECAY)
         self.displayed += (targets - self.displayed) * blend
+        self.raw_levels = targets  # unsmoothed, for ORGAN-12's beat detection
         return self.displayed
 
 
@@ -660,6 +709,11 @@ class VizApp:
         self.look = settings["look"]
         self.look_index = LOOKS.index(self.look)
         self._rebuild_look_colors()
+        self._load_organ()
+        if self.look == "organ-12" and not self.organ_layers:
+            self.look_index = 0
+            self.look = LOOKS[0]
+            self._rebuild_look_colors()
 
         self.legend_surfaces, self.legend_y, self.legend_font = self._build_legend()
         self.title_surface, self.title_x, self.title_y = self._build_title(self.legend_font)
@@ -772,6 +826,8 @@ class VizApp:
             self.row_off = [OFF_GREY] * total
             self.col_on = None
             self.col_off = None
+        elif self.look == "organ-12":
+            self.row_on = self.row_off = self.col_on = self.col_off = None  # see render_organ()
         else:
             self.col_on = []
             self.col_off = []
@@ -786,8 +842,83 @@ class VizApp:
             self.row_on = None
             self.row_off = None
 
+    def _load_organ(self):
+        """Loads the ORGAN-12 lamp artwork once at startup, each PNG's alpha
+        flattened onto black (premultiplied). Brightness is quantized to
+        ORGAN_STEPS levels, each a pre-dimmed copy of the lamp built the
+        first time it's needed (see _organ_step()), so a frame is just one
+        plain blit plus two BLEND_ADD blits (~15ms on a Pi 3B) -- dimming
+        on the fly with a BLEND_MULT fill measured ~22ms *per lamp*.
+        Missing artwork drops the look from the cycle rather than crashing."""
+        self.organ_layers = []
+        self.organ_groups = []
+        self.organ_cache = []
+        self.organ_brightness = np.zeros(len(ORGAN_LAMPS))
+        self.organ_baseline = np.zeros(len(ORGAN_LAMPS))
+        self.organ_var = np.full(len(ORGAN_LAMPS), ORGAN_MIN_STD ** 2)
+        centers = np.array(self.analyzer.band_centers)
+        lower = 0
+        try:
+            for filename, upper in ORGAN_LAMPS:
+                art = pygame.image.load(str(ORGAN_DIR / filename)).convert_alpha()
+                if art.get_size() != (FRAME_W, FRAME_H):
+                    art = pygame.transform.smoothscale(art, (FRAME_W, FRAME_H))
+                layer = pygame.Surface((FRAME_W, FRAME_H))
+                layer.fill(BLACK)
+                layer.blit(art, (0, 0))
+                self.organ_layers.append(layer)
+                self.organ_cache.append({ORGAN_STEPS: layer})
+                self.organ_groups.append(np.flatnonzero((centers >= lower) & (centers < upper)))
+                lower = upper
+        except (pygame.error, OSError) as exc:
+            print(f"ORGAN-12 artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
+            self.organ_layers = []
+
+    def _organ_step(self, lamp, step):
+        cache = self.organ_cache[lamp]
+        if step not in cache:
+            layer = self.organ_layers[lamp]
+            dimmed = pygame.Surface((FRAME_W, FRAME_H))
+            dimmed.fill(BLACK)
+            layer.set_alpha(round(255 * step / ORGAN_STEPS))
+            dimmed.blit(layer, (0, 0))
+            layer.set_alpha(None)
+            cache[step] = dimmed
+        return cache[step]
+
+    def render_organ(self, canvas, levels):
+        """ORGAN-12 look: each lamp flashes on its group's beats -- how far
+        the loudest band in the group jumps above its own ~1s running
+        average, in units of its own running standard deviation -- then
+        goes fully dark between them (see ORGAN_BEAT_ON/FULL). A warm-up/cool-down lag (ORGAN_WARM/COOL) keeps
+        the flashes smooth like incandescent bulbs rather than strobing.
+        Reads the analyzer's unsmoothed levels (its DECAY smoothing would
+        smear the gaps between beats). Expects canvas already filled black."""
+        raw = self.analyzer.raw_levels
+        first = True
+        for i, group in enumerate(self.organ_groups):
+            level = float(raw[group].max()) if group.size else 0.0
+            excess = level - self.organ_baseline[i]
+            self.organ_baseline[i] += excess * ORGAN_BASELINE_BLEND
+            self.organ_var[i] += (excess * excess - self.organ_var[i]) * ORGAN_BASELINE_BLEND
+            z = excess / max(np.sqrt(self.organ_var[i]), ORGAN_MIN_STD)
+            target = min(1.0, max(0.0, (z - ORGAN_BEAT_ON) / (ORGAN_BEAT_FULL - ORGAN_BEAT_ON)))
+            rate = ORGAN_WARM if target > self.organ_brightness[i] else ORGAN_COOL
+            self.organ_brightness[i] += (target - self.organ_brightness[i]) * rate
+            step = int(round(self.organ_brightness[i] * ORGAN_STEPS))
+            if step <= 0:
+                continue
+            lamp = self._organ_step(i, min(step, ORGAN_STEPS))
+            if first:
+                canvas.blit(lamp, (0, 0))
+                first = False
+            else:
+                canvas.blit(lamp, (0, 0), special_flags=pygame.BLEND_ADD)
+
     def cycle_look(self, direction):
         self.look_index = (self.look_index + direction) % len(LOOKS)
+        if LOOKS[self.look_index] == "organ-12" and not self.organ_layers:
+            self.look_index = (self.look_index + direction) % len(LOOKS)
         self.look = LOOKS[self.look_index]
         print(f"look: {self.look}", file=sys.stderr)
         save_setting("vizmic", "look", self.look)
@@ -952,6 +1083,12 @@ class VizApp:
             return
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
+        if self.look == "organ-12":
+            self.render_organ(canvas, levels)
+            if self.power_dialog_active:
+                self.draw_power_dialog(canvas)
+            self.fb.write_surface(canvas)
+            return
         canvas.blit(self.title_surface, (self.title_x, self.title_y))
         for i, level in enumerate(levels):
             lit_rungs = max(self.min_rungs, int(level * self.total_rungs))
