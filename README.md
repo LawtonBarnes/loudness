@@ -53,6 +53,9 @@ two "lamp shows" built from full-frame artwork (configured in
   `headlights/`), always shown dark, with four patterns of 4 lamps each:
   bass lights the diagonal, low mids (500/750Hz) the anti-diagonal, high
   mids (1K-2K) the left/right pairs, treble (4K/8K) the top/bottom pairs.
+  Lit patterns are full-frame renders with lens flare, added over the dark
+  grid (made in Photoshop with the layers in Add/Linear Dodge mode, so the
+  PSD previews match the screen).
 
 Each lamp fires on its group's *beats* -- jumps above its own ~1s running
 average, measured in its own running standard deviations -- and goes

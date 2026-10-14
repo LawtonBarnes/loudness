@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.11"
+VERSION = "1.12"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -78,10 +78,7 @@ HARD_RED = (210, 30, 30)
 # per-show keys: "warm"/"cool" override LAMP_WARM/LAMP_COOL, "hold" switches
 # the lamps to triggered flashes (see LampShow.render()), "warm_dim" tints
 # a dimming lamp toward orange/red like a cooling filament (LAMP_WARM_DIM),
-# "underscan" shrinks all the show's art around the frame center, and
-# "regions" blits/caches only the lamps' own bounding rects (alpha-mask
-# components) rather than the full frame -- only for art made of a few solid
-# shapes; ORGAN-12's halftone dots would make thousands of tiny rects.
+# and "underscan" shrinks all the show's art around the frame center.
 #   organ-12 (2026-10-14): a 1970s Radio Shack-style color organ.
 #     Bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
 #   headlights (2026-10-14): a 4x4 grid of sealed-beam headlights, always shown
@@ -89,7 +86,9 @@ HARD_RED = (210, 30, 30)
 #     Bass (125/250) -> diagonal, low mids (500/750) -> anti-diagonal, high
 #     mids (1K-2K) -> left/right pairs, treble (4K/8K) -> top/bottom pairs.
 #     Triggered flashes held at full with a slow warm glow-out, since lamps
-#     that just followed the beat read as flicker and rarely hit full.
+#     that just followed the beat read as flicker and rarely hit full. Lamp
+#     art is the FLARE renders (lens flare haze across the whole frame,
+#     rendered on black), so like ORGAN-12 every lamp is a full-frame add.
 LAMP_SHOWS = {
     "organ-12": {
         "dir": "organ12",
@@ -113,7 +112,6 @@ LAMP_SHOWS = {
         "hold": 8,
         "warm_dim": True,
         "underscan": 0.95,
-        "regions": True,
     },
 }
 # Beat response (2026-10-14): a lamp lights on how far its group jumps above
@@ -729,8 +727,7 @@ class LampShow:
         self.warm_dim = spec.get("warm_dim", False)
         self.underscan = spec.get("underscan", 1.0)
         self.background = None
-        self.regions = []  # per lamp, the rects it's blitted/cached in
-        self.cache = []  # per lamp, {step: [pre-dimmed surface per region]}
+        self.cache = []  # per lamp, {step: pre-dimmed frame}
         self.groups = []
         n = len(spec["lamps"])
         self.brightness = np.zeros(n)
@@ -748,15 +745,7 @@ class LampShow:
                 layer = pygame.Surface((FRAME_W, FRAME_H))
                 layer.fill(BLACK)
                 layer.blit(art, (0, 0))
-                if spec.get("regions"):
-                    # Skips frame-sized components -- e.g. the faint 1px
-                    # border Photoshop left around every HEADLIGHTS pattern.
-                    rects = pygame.mask.from_surface(art, 8).get_bounding_rects()
-                    rects = [r for r in rects if r.w * r.h < FRAME_W * FRAME_H // 4]
-                else:
-                    rects = [layer.get_rect()]
-                self.regions.append(rects)
-                self.cache.append({LAMP_STEPS: [layer.subsurface(r).copy() for r in rects]})
+                self.cache.append({LAMP_STEPS: layer})
                 self.groups.append(np.flatnonzero((centers >= lower) & (centers < upper)))
                 lower = upper
             self.ok = True
@@ -789,11 +778,8 @@ class LampShow:
             level = step / LAMP_STEPS
             exps = LAMP_WARM_DIM if self.warm_dim else (1.0, 1.0, 1.0)
             tint = tuple(round(255 * level ** e) for e in exps)
-            dimmed = []
-            for full in cache[LAMP_STEPS]:
-                part = full.copy()
-                part.fill(tint, special_flags=pygame.BLEND_MULT)
-                dimmed.append(part)
+            dimmed = cache[LAMP_STEPS].copy()
+            dimmed.fill(tint, special_flags=pygame.BLEND_MULT)
             cache[step] = dimmed
         return cache[step]
 
@@ -828,8 +814,7 @@ class LampShow:
                 continue
             flags = 0 if first else pygame.BLEND_ADD
             first = False
-            for rect, part in zip(self.regions[i], self._dimmed(i, step)):
-                canvas.blit(part, rect.topleft, special_flags=flags)
+            canvas.blit(self._dimmed(i, step), (0, 0), special_flags=flags)
 
 
 class VizApp:
