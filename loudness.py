@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.12"
+VERSION = "1.13"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -64,7 +64,7 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
-LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights")
+LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17")
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
@@ -89,6 +89,11 @@ HARD_RED = (210, 30, 30)
 #     that just followed the beat read as flicker and rarely hit full. Lamp
 #     art is the FLARE renders (lens flare haze across the whole frame,
 #     rendered on black), so like ORGAN-12 every lamp is a full-frame add.
+#   organ-17 (2026-10-14): a 17-lamp color organ behind diamond-pattern glass,
+#     four colors rendered on black and added together. Same band split as
+#     headlights: bass -> red (5 lamps), low mids -> orange, high mids ->
+#     green, treble -> blue (4 each). Same held flashes + warm glow-out as
+#     headlights -- ORGAN-12's quick flashes read as flicker here.
 LAMP_SHOWS = {
     "organ-12": {
         "dir": "organ12",
@@ -112,6 +117,19 @@ LAMP_SHOWS = {
         "hold": 8,
         "warm_dim": True,
         "underscan": 0.95,
+    },
+    "organ-17": {
+        "dir": "organ17",
+        "lamps": (
+            ("ORGAN-17-Red.png", 400),
+            ("ORGAN-17-Orange.png", 900),
+            ("ORGAN-17-Green.png", 3000),
+            ("ORGAN-17-Blue.png", float("inf")),
+        ),
+        "warm": 0.6,
+        "cool": 0.15,
+        "hold": 8,
+        "warm_dim": True,
     },
 }
 # Beat response (2026-10-14): a lamp lights on how far its group jumps above

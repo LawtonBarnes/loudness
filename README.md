@@ -40,9 +40,9 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle six display looks, persisted as `look` in `settings.ini`:
+`←`/`→` cycle seven display looks, persisted as `look` in `settings.ini`:
 `hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), plus
-two "lamp shows" built from full-frame artwork (configured in
+three "lamp shows" built from full-frame artwork (configured in
 `loudness.py`'s `LAMP_SHOWS` table):
 
 - `organ-12` -- a 1970s Radio Shack-style color organ. Twelve lamps
@@ -56,11 +56,15 @@ two "lamp shows" built from full-frame artwork (configured in
   Lit patterns are full-frame renders with lens flare, added over the dark
   grid (made in Photoshop with the layers in Add/Linear Dodge mode, so the
   PSD previews match the screen).
+- `organ-17` -- a 17-lamp color organ behind diamond-pattern glass
+  (artwork in `organ17/`), four colors added together on black: red (5
+  lamps) follows bass, orange the low mids, green the high mids, blue the
+  treble (4 lamps each) -- the same band split as HEADLIGHTS.
 
 Each lamp fires on its group's *beats* -- jumps above its own ~1s running
 average, measured in its own running standard deviations -- and goes
 fully dark between them. ORGAN-12 flashes and glows out quickly;
-HEADLIGHTS holds each flash at full for about a quarter second, then
+HEADLIGHTS and ORGAN-17 hold each flash at full for about a quarter second, then
 glows out slowly, dimming toward orange/red like a cooling filament.
 
 ## Keyboard / remote controls
