@@ -82,8 +82,8 @@ HARD_RED = (210, 30, 30)
 #   organ-12 (2026-10-14): a 1970s Radio Shack-style color organ.
 #     Bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
 #     V2 art (2026-10-15): photographed lamps behind diamond-pattern glass,
-#     rendered on black like organ-17, with the same held flashes + warm
-#     glow-out (it was the one quick-flashing show before that).
+#     rendered on black like organ-17, with held flashes + warm glow-out
+#     at a pace halfway between V1's quick flashes and organ-17's.
 #   headlights (2026-10-14): a 4x4 grid of sealed-beam headlights, always shown
 #     dark (background), each of four patterns lighting its own 4 of the 16.
 #     Bass (125/250) -> diagonal, low mids (500/750) -> anti-diagonal, high
@@ -105,9 +105,11 @@ LAMP_SHOWS = {
             ("ORGAN-12-Green.png", 3000),
             ("ORGAN-12-Blue.png", float("inf")),
         ),
-        "warm": 0.6,
-        "cool": 0.15,
-        "hold": 8,
+        # Halfway between V1's quick flashes and organ-17's slow held ones
+        # (2026-10-15: the full incandescent timing read as a bit lazy here).
+        "warm": 0.8,
+        "cool": 0.25,
+        "hold": 4,
         "warm_dim": True,
     },
     "headlights": {

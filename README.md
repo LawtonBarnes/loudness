@@ -63,9 +63,10 @@ three "lamp shows" built from full-frame artwork (configured in
 
 Each lamp fires on its group's *beats* -- jumps above its own ~1s running
 average, measured in its own running standard deviations -- and goes
-fully dark between them. Every show holds each flash at full for about a
-quarter second, then glows out slowly, dimming toward orange/red like a
-cooling filament.
+fully dark between them. Every show holds each flash at full, then glows
+out slowly, dimming toward orange/red like a cooling filament --
+HEADLIGHTS and ORGAN-17 hold for about a quarter second, ORGAN-12 about
+half that, with a quicker rise and fade.
 
 ## Keyboard / remote controls
 
