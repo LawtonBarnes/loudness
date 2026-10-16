@@ -46,8 +46,8 @@ three "lamp shows" built from full-frame artwork (configured in
 `loudness.py`'s `LAMP_SHOWS` table):
 
 - `organ-12` -- a 1970s Radio Shack-style color organ. Twelve lamps
-  (artwork in `organ12/`) in three colors, added together on black like
-  overlapping floodlights: red follows bass (125/250Hz), green the mids
+  behind diamond-pattern glass (artwork in `organ12/`) in three colors,
+  added together on black: red follows bass (125/250Hz), green the mids
   (500Hz-2K), blue the treble (4K/8K).
 - `headlights` -- a 4x4 grid of sealed-beam headlights (artwork in
   `headlights/`), always shown dark, with four patterns of 4 lamps each:
@@ -63,9 +63,9 @@ three "lamp shows" built from full-frame artwork (configured in
 
 Each lamp fires on its group's *beats* -- jumps above its own ~1s running
 average, measured in its own running standard deviations -- and goes
-fully dark between them. ORGAN-12 flashes and glows out quickly;
-HEADLIGHTS and ORGAN-17 hold each flash at full for about a quarter second, then
-glows out slowly, dimming toward orange/red like a cooling filament.
+fully dark between them. Every show holds each flash at full for about a
+quarter second, then glows out slowly, dimming toward orange/red like a
+cooling filament.
 
 ## Keyboard / remote controls
 

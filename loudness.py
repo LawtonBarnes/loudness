@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.13"
+VERSION = "1.14"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -81,6 +81,9 @@ HARD_RED = (210, 30, 30)
 # and "underscan" shrinks all the show's art around the frame center.
 #   organ-12 (2026-10-14): a 1970s Radio Shack-style color organ.
 #     Bass (125/250) -> red, mids (500-2K) -> green, treble (4K/8K) -> blue.
+#     V2 art (2026-10-15): photographed lamps behind diamond-pattern glass,
+#     rendered on black like organ-17, with the same held flashes + warm
+#     glow-out (it was the one quick-flashing show before that).
 #   headlights (2026-10-14): a 4x4 grid of sealed-beam headlights, always shown
 #     dark (background), each of four patterns lighting its own 4 of the 16.
 #     Bass (125/250) -> diagonal, low mids (500/750) -> anti-diagonal, high
@@ -98,10 +101,14 @@ LAMP_SHOWS = {
     "organ-12": {
         "dir": "organ12",
         "lamps": (  # (artwork file, Hz limit for this lamp's band group)
-            ("ORGAN-12_Red.png", 400),
-            ("ORGAN-12_Green.png", 3000),
-            ("ORGAN-12_Blue.png", float("inf")),
+            ("ORGAN-12-Red.png", 400),
+            ("ORGAN-12-Green.png", 3000),
+            ("ORGAN-12-Blue.png", float("inf")),
         ),
+        "warm": 0.6,
+        "cool": 0.15,
+        "hold": 8,
+        "warm_dim": True,
     },
     "headlights": {
         "dir": "headlights",
