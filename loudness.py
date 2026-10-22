@@ -105,11 +105,11 @@ LAMP_SHOWS = {
             ("ORGAN-12-Green.png", 3000),
             ("ORGAN-12-Blue.png", float("inf")),
         ),
-        # Halfway between V1's quick flashes and organ-17's slow held ones
-        # (2026-10-15: the full incandescent timing read as a bit lazy here).
-        "warm": 0.8,
-        "cool": 0.25,
-        "hold": 4,
+        # Same held incandescent timing as organ-17 (2026-10-22: the
+        # halfway-quicker 0.8/0.25/hold 4 still read as a bit flickery).
+        "warm": 0.6,
+        "cool": 0.15,
+        "hold": 8,
         "warm_dim": True,
     },
     "headlights": {
