@@ -40,10 +40,10 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle eight display looks, persisted as `look` in `settings.ini`:
+`←`/`→` cycle nine display looks, persisted as `look` in `settings.ini`:
 `hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), three
 "lamp shows" built from full-frame artwork (configured in `loudness.py`'s
-`LAMP_SHOWS` table), and a needle meter (`VU_METERS`):
+`LAMP_SHOWS` table), and two needle meters (`VU_METERS`):
 
 - `organ-12` -- a 1970s Radio Shack-style color organ. Twelve lamps
   behind diamond-pattern glass (artwork in `organ12/`) in three colors,
@@ -78,6 +78,10 @@ cooling filament.
   fixed level (`VU_ZERO_DB`, tuned on P1 to normal listening volume); the
   auto-gain only pulls the needle back once the music gets loud.
   `gain_bias` (Up/Down) doesn't affect it.
+- `vu-peak` -- a green/red L-LEVEL VU meter (-20 to +3, artwork in
+  `vupeak/`) with the same needle, smear and calibration as MARANTZ, plus
+  a PEAK lamp that lights whenever the needle is in the red (0 VU and up)
+  and holds for 0.2s after it drops back.
 
 ## Keyboard / remote controls
 

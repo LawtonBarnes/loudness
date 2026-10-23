@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.14"
+VERSION = "1.15"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -64,7 +64,8 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
-LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17", "marantz")
+LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17", "marantz",
+         "vu-peak")
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
@@ -174,6 +175,10 @@ LAMP_WARM_DIM = (1.0, 1.6, 2.6)
 #     aren't exactly radial to the pivot, so these are where the needle
 #     crosses each tick's middle. "rest"/"pin" are the stop pins: rest just
 #     left of -20 (silence), pin just past +6.
+#   vu-peak (2026-10-23): a green/red L-LEVEL VU meter (-20..+3) with a PEAK
+#     lamp. Optional "peak" art (full-frame, glow included) is drawn over the
+#     bezel whenever the needle is in the red (0 VU and up), held for
+#     VU_PEAK_HOLD after it drops back so a short kick still reads as a flash.
 VU_METERS = {
     "marantz": {
         "dir": "marantz",
@@ -186,6 +191,19 @@ VU_METERS = {
                   (-1, 10.75), (0, 15.75), (1, 21.75), (2, 28.25), (6, 43.6)),
         "rest": -47.5,
         "pin": 46.5,
+    },
+    "vu-peak": {
+        "dir": "vupeak",
+        "scale": "SCALE.png",
+        "needle": "NEEDLE.png",
+        "bezel": "BEZEL.png",
+        "peak": "PEAK.png",
+        "pivot": (355.5, 464),  # 5px needle, so its center line falls mid-pixel
+        "hidden_radius": 120,  # bezel top edge y=337
+        "marks": ((-20, -36.6), (-10, -25.35), (-7, -17.75), (-5, -10.1), (-3, -2.35), (-2, 3.45),
+                  (-1, 9.25), (0, 16.1), (1, 24.65), (2, 32.85), (3, 40.75)),
+        "rest": -39.5,
+        "pin": 43.5,
     },
 }
 # The needle reads the analyzer's mid-band level (see SpectrumAnalyzer.update)
@@ -212,6 +230,7 @@ VU_SUBSTEP = 0.004  # physics step, seconds
 # of separate lines on fast swings). Nothing when the needle is still.
 VU_SMEAR_FRAMES = 3
 VU_SMEAR_OPACITY = 0.5  # right behind the needle
+VU_PEAK_HOLD = 0.2  # seconds a PEAK lamp stays lit after the needle leaves the red
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -951,6 +970,12 @@ class VUMeter:
             self.needle = needle.subsurface((0, 0, w, visible)).copy()
             self.mid_radius = h - visible / 2
             self._build_sweep_area(spec["hidden_radius"], h)
+            self.peak = None
+            if spec.get("peak"):
+                peak = pygame.image.load(str(art_dir / spec["peak"])).convert_alpha()
+                self.peak_rect = peak.get_bounding_rect()
+                self.peak = peak.subsurface(self.peak_rect).copy()
+            self.peak_until = 0.0
             self.ok = True
         except (pygame.error, OSError) as exc:
             print(f"{name} artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
@@ -971,9 +996,10 @@ class VUMeter:
         the pivot -- so the pixels between any two needle angles are one
         contiguous slice (np.searchsorted), and a frame's smear only ever
         touches what the needle actually crossed."""
-        px, py = self.pivot
-        ys, xs = np.mgrid[max(0, py - outer - 1):py, max(0, px - outer - 1):min(FRAME_W, px + outer + 2)]
-        dx, dy = xs - px, py - ys
+        px, py = self.pivot  # may be fractional -- pixel centers are measured from it
+        ys, xs = np.mgrid[max(0, int(py - outer - 1)):int(np.ceil(py)),
+                          max(0, int(px - outer - 1)):min(FRAME_W, int(px + outer + 2))]
+        dx, dy = xs + 0.5 - px, py - (ys + 0.5)
         radius = np.hypot(dx, dy)
         theta = np.degrees(np.arctan2(dx, dy))  # clockwise from vertical, like the needle
         keep = (radius >= inner) & (radius <= outer) & (theta >= self.rest - 1) & (theta <= self.pin + 1)
@@ -1053,6 +1079,11 @@ class VUMeter:
         self._smear(canvas, [angle] + self.trail_angles)
         self._blit_needle(canvas, self.needle, angle)
         canvas.blit(self.bezel, self.bezel_rect)
+        if self.peak is not None:
+            if self.deflection >= 1.0:  # 0 VU, where the red starts
+                self.peak_until = now + VU_PEAK_HOLD
+            if now < self.peak_until:
+                canvas.blit(self.peak, self.peak_rect)
         self.trail_angles = [angle] + self.trail_angles[:VU_SMEAR_FRAMES - 1]
 
 
