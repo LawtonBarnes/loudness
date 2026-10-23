@@ -181,6 +181,7 @@ VU_METERS = {
         "needle": "NEEDLE.png",
         "bezel": "BEZEL.png",
         "pivot": (364, 458),
+        "hidden_radius": 100,  # needle this close to the pivot is always under the bezel (top edge y=350)
         "marks": ((-20, -43.5), (-10, -33.0), (-7, -24.0), (-5, -15.25), (-3, -1.25),
                   (-1, 10.75), (0, 15.75), (1, 21.75), (2, 28.25), (6, 43.6)),
         "rest": -47.5,
@@ -204,6 +205,13 @@ VU_GATE_DB = -20.0  # VU reading power-subtracted as room noise, so silence rest
 VU_NATURAL_HZ = 3.2  # spring stiffness -- higher swings faster
 VU_DAMPING = 0.65  # damping ratio -- below 1 overshoots (a real VU is ~0.8)
 VU_SUBSTEP = 0.004  # physics step, seconds
+# Motion blur (2026-10-23): white light added over the wedge the needle swept
+# through in the last VU_SMEAR_FRAMES frames, strongest right behind the
+# needle and fading to nothing -- a continuous smear, interpolated between
+# frame positions (faded needle copies at whole-frame angles read as a fan
+# of separate lines on fast swings). Nothing when the needle is still.
+VU_SMEAR_FRAMES = 3
+VU_SMEAR_OPACITY = 0.5  # right behind the needle
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -922,18 +930,27 @@ class VUMeter:
         self.deflection = 0.0
         self.velocity = 0.0
         self.last_time = None
+        self.trail_angles = []  # needle angle 1, 2, ... frames ago, VU_SMEAR_FRAMES at most
         art_dir = BASE_DIR / spec["dir"]
         try:
             self.scale = pygame.Surface((FRAME_W, FRAME_H))
             self.scale.fill(BLACK)
             self.scale.blit(pygame.image.load(str(art_dir / spec["scale"])).convert_alpha(), (0, 0))
-            self.bezel = pygame.image.load(str(art_dir / spec["bezel"])).convert_alpha()
+            bezel = pygame.image.load(str(art_dir / spec["bezel"])).convert_alpha()
+            # Just the bezel's painted area -- a full-frame alpha blit costs
+            # several ms on a Pi 3B+ for nothing.
+            self.bezel_rect = bezel.get_bounding_rect()
+            self.bezel = bezel.subsurface(self.bezel_rect).copy()
             needle = pygame.image.load(str(art_dir / spec["needle"])).convert_alpha()
-            # Twice the needle's height with the needle in the top half, so
-            # the surface's center is the pivot and rotozoom spins about it.
+            # Only the part of the needle that can ever clear the bezel is
+            # rotated (rotozoom's cost grows with the rotated bounding box);
+            # it's placed by its own center, `mid_radius` from the pivot
+            # along the needle.
             w, h = needle.get_size()
-            self.needle = pygame.Surface((w, h * 2), pygame.SRCALPHA)
-            self.needle.blit(needle, (0, 0))
+            visible = h - spec["hidden_radius"]
+            self.needle = needle.subsurface((0, 0, w, visible)).copy()
+            self.mid_radius = h - visible / 2
+            self._build_sweep_area(spec["hidden_radius"], h)
             self.ok = True
         except (pygame.error, OSError) as exc:
             print(f"{name} artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
@@ -947,6 +964,69 @@ class VUMeter:
         if db > self.mark_db[-1]:
             return min(self.pin, self.mark_angle[-1] + (db - self.mark_db[-1]) * self.top_slope)
         return float(np.interp(db, self.mark_db, self.mark_angle))
+
+    def _build_sweep_area(self, inner, outer):
+        """Every frame pixel the needle can sweep over (between `inner` and
+        `outer` radius, between the stop pins), sorted by its angle from
+        the pivot -- so the pixels between any two needle angles are one
+        contiguous slice (np.searchsorted), and a frame's smear only ever
+        touches what the needle actually crossed."""
+        px, py = self.pivot
+        ys, xs = np.mgrid[max(0, py - outer - 1):py, max(0, px - outer - 1):min(FRAME_W, px + outer + 2)]
+        dx, dy = xs - px, py - ys
+        radius = np.hypot(dx, dy)
+        theta = np.degrees(np.arctan2(dx, dy))  # clockwise from vertical, like the needle
+        keep = (radius >= inner) & (radius <= outer) & (theta >= self.rest - 1) & (theta <= self.pin + 1)
+        order = np.argsort(theta[keep], kind="stable")
+        self.sweep_theta = theta[keep][order].astype(np.float32)
+        sweep_x, sweep_y = xs[keep][order], ys[keep][order]
+        # The smear is drawn into a gray 32-bit buffer covering the sweep
+        # area (shared with a Surface, no copying) and added onto the frame
+        # with one BLEND_ADD blit of just the swept rectangle -- writing the
+        # frame's RGB pixels from numpy cost ~4x as much, and an 8-bit
+        # palette source made the ADD blit 4x slower. Over the meter's black
+        # face adding gray is the same as fading to white.
+        self.smear_origin = (int(sweep_x.min()), int(sweep_y.min()))
+        w = int(sweep_x.max()) - self.smear_origin[0] + 1
+        h = int(sweep_y.max()) - self.smear_origin[1] + 1
+        self.sweep_rx = (sweep_x - self.smear_origin[0]).astype(np.intp)
+        self.sweep_ry = (sweep_y - self.smear_origin[1]).astype(np.intp)
+        self.sweep_flat = self.sweep_ry * w + self.sweep_rx
+        self.smear_buf = np.zeros((h, w), dtype=np.uint32)  # gray * 0x010101 per pixel
+        self.smear_surf = pygame.image.frombuffer(self.smear_buf, (w, h), "RGBX")
+
+    def _smear(self, canvas, angles):
+        """`angles`: the needle now, then 1, 2, ... frames ago."""
+        flat = self.smear_buf.reshape(-1)
+        first, last = len(self.sweep_theta), 0
+        for k in range(len(angles) - 1):
+            start, end = angles[k], angles[k + 1]
+            if abs(end - start) < 0.05:
+                continue
+            # float32 bounds: a Python float would make numpy convert the
+            # whole array to float64 on every call (~1ms each).
+            s = np.searchsorted(self.sweep_theta, np.float32(min(start, end)))
+            e = np.searchsorted(self.sweep_theta, np.float32(max(start, end)))
+            if s >= e:
+                continue
+            age = k + (self.sweep_theta[s:e] - start) / (end - start)  # frames since the needle crossed
+            level = (255 * VU_SMEAR_OPACITY * (1 - age / VU_SMEAR_FRAMES)).astype(np.uint32) * 0x010101
+            idx = self.sweep_flat[s:e]
+            flat[idx] = np.maximum(flat[idx], level)  # a reversal crosses some pixels twice
+            first, last = min(first, s), max(last, e)
+        if first >= last:
+            return
+        rx, ry = self.sweep_rx[first:last], self.sweep_ry[first:last]
+        area = pygame.Rect(int(rx.min()), int(ry.min()), int(rx.max() - rx.min()) + 1, int(ry.max() - ry.min()) + 1)
+        canvas.blit(self.smear_surf, (self.smear_origin[0] + area.x, self.smear_origin[1] + area.y),
+                    area, special_flags=pygame.BLEND_ADD)
+        flat[self.sweep_flat[first:last]] = 0
+
+    def _blit_needle(self, canvas, needle, angle):
+        rotated = pygame.transform.rotozoom(needle, -angle, 1.0)
+        t = np.radians(angle)
+        center = (self.pivot[0] + self.mid_radius * np.sin(t), self.pivot[1] - self.mid_radius * np.cos(t))
+        canvas.blit(rotated, rotated.get_rect(center=(round(center[0]), round(center[1]))))
 
     def render(self, canvas, raw):
         """`raw` is unused (LampShow's signature) -- reads the analyzer's
@@ -969,9 +1049,11 @@ class VUMeter:
             elif self.deflection > self.max_deflection:
                 self.deflection, self.velocity = self.max_deflection, 0.0
         canvas.blit(self.scale, (0, 0))
-        needle = pygame.transform.rotozoom(self.needle, -self._angle(self.deflection), 1.0)
-        canvas.blit(needle, needle.get_rect(center=self.pivot))
-        canvas.blit(self.bezel, (0, 0))
+        angle = self._angle(self.deflection)
+        self._smear(canvas, [angle] + self.trail_angles)
+        self._blit_needle(canvas, self.needle, angle)
+        canvas.blit(self.bezel, self.bezel_rect)
+        self.trail_angles = [angle] + self.trail_angles[:VU_SMEAR_FRAMES - 1]
 
 
 class VizApp:

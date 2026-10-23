@@ -72,7 +72,9 @@ cooling filament.
   needle's pivot). The needle reads the 250Hz-1.5K bands -- where music
   stands well clear of room/fan noise -- and moves like a real meter
   movement: a damped spring that rises in about 0.3s, overshoots a touch
-  and bounces with the beat, resting on its pin in silence. 0 VU is a
+  and bounces with the beat, resting on its pin in silence. Fast swings
+  leave a short motion-blur smear: white light over the wedge the needle
+  swept through in the last 3 frames, fading out behind it. 0 VU is a
   fixed level (`VU_ZERO_DB`, tuned on P1 to normal listening volume); the
   auto-gain only pulls the needle back once the music gets loud.
   `gain_bias` (Up/Down) doesn't affect it.
