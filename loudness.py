@@ -64,7 +64,7 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
-LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17")
+LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17", "marantz")
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
@@ -163,6 +163,47 @@ LAMP_STEPS = 24  # brightness levels per lamp, each cached as a pre-dimmed copy 
 # green and blue faster, so a half-lit lamp reads orange and a nearly-out one
 # deep red, while full brightness is untouched.
 LAMP_WARM_DIM = (1.0, 1.6, 2.6)
+
+# Needle-meter looks (see VUMeter) -- a fixed scale, one needle rotating
+# about a pivot hidden under a black bezel layer, all from the user's PSD
+# layers exported 1:1 at 720x480.
+#   marantz (2026-10-23): a Marantz receiver's VU meter. Needle art is the
+#     vertical (0 degree) needle; "pivot" is the bottom of its line, under
+#     the bezel. "marks" maps printed dB marks to needle angles (degrees
+#     clockwise from vertical), measured off the art -- the scale's ticks
+#     aren't exactly radial to the pivot, so these are where the needle
+#     crosses each tick's middle. "rest"/"pin" are the stop pins: rest just
+#     left of -20 (silence), pin just past +6.
+VU_METERS = {
+    "marantz": {
+        "dir": "marantz",
+        "scale": "SCALE.png",
+        "needle": "NEEDLE.png",
+        "bezel": "BEZEL.png",
+        "pivot": (364, 458),
+        "marks": ((-20, -43.5), (-10, -33.0), (-7, -24.0), (-5, -15.25), (-3, -1.25),
+                  (-1, 10.75), (0, 15.75), (1, 21.75), (2, 28.25), (6, 43.6)),
+        "rest": -47.5,
+        "pin": 46.5,
+    },
+}
+# The needle reads the analyzer's mid-band level (see SpectrumAnalyzer.update)
+# relative to VU_ZERO_DB, and moves like a real meter movement: a damped
+# spring driven by linear signal amplitude (0 VU = deflection 1.0), so it
+# rises in ~0.3s, overshoots a touch and bounces with the beat instead of
+# tracking every 23ms chunk.
+# Tuned on P1 (2026-10-23) against music through PRODUCTION's amp: only the
+# 250Hz-1K5 bands, untilted -- they sat ~20dB above the silent room, while
+# the fans' 2K/4K hum (which treble_boost lifts) left only ~6dB of swing.
+# Fixed reference rather than auto-gain: at normal volume the auto-gain sits
+# parked at noise_gate_db, so it only steps in (pulling the needle back) once
+# the music is loud enough to move it.
+VU_LOW_HZ, VU_HIGH_HZ = 200, 1700  # band centers inside this range drive the needle
+VU_ZERO_DB = -33.0  # mid-band level (dBFS, pre-gain) that reads 0 VU -- P1's normal listening level
+VU_GATE_DB = -20.0  # VU reading power-subtracted as room noise, so silence rests on the pin
+VU_NATURAL_HZ = 3.2  # spring stiffness -- higher swings faster
+VU_DAMPING = 0.65  # damping ratio -- below 1 overshoots (a real VU is ~0.8)
+VU_SUBSTEP = 0.004  # physics step, seconds
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
 MOUSE_MOVE_THRESHOLD = 12  # cumulative REL_X/REL_Y units before it counts as one direction press
@@ -653,7 +694,8 @@ class SpectrumAnalyzer:
         # 2kHz and 8kHz). Defaults to all-zero (load_settings() guarantees a
         # 9-length list), so a puppet with no calibration data behaves
         # identically to before this feature existed.
-        self.tilt_db = np.linspace(-bass_cut_db, treble_boost, num_bars) + np.array(band_offsets or [0.0] * num_bars)
+        self.band_offsets = np.array(band_offsets or [0.0] * num_bars)
+        self.tilt_db = np.linspace(-bass_cut_db, treble_boost, num_bars) + self.band_offsets
         # Reference magnitude: approximately what a full-scale (0dBFS)
         # sine produces after this window, so magnitude/reference is a
         # fraction of full scale and 20*log10(...) is dBFS.
@@ -682,6 +724,8 @@ class SpectrumAnalyzer:
         self.band_centers = centers
         self.displayed = np.zeros(num_bars)
         self.raw_levels = np.zeros(num_bars)
+        self.vu_bands = (centers >= VU_LOW_HZ) & (centers <= VU_HIGH_HZ)
+        self.midband_db = FLOOR_DB
 
     def update(self, samples):
         magnitudes = np.abs(np.fft.rfft(samples * self.window))
@@ -723,6 +767,13 @@ class SpectrumAnalyzer:
         blend = np.where(rising, ATTACK, DECAY)
         self.displayed += (targets - self.displayed) * blend
         self.raw_levels = targets  # unsmoothed, for LampShow's beat detection
+        # VUMeter's level: the VU_LOW/HIGH_HZ bands power-summed, calibrated
+        # but untilted, plus however far the auto-gain has backed off from
+        # its noise-gate resting point (zero until the music gets loud).
+        # gain_bias is left out -- it's tuned per puppet for the bars.
+        backoff = min(0.0, self.gain - self.gain_bias - (TARGET_HEADROOM_DB - self.noise_gate_db))
+        mid_db = (raw_db + self.band_offsets)[self.vu_bands]
+        self.midband_db = 10 * np.log10(np.sum(10 ** (mid_db / 10))) + backoff
         return self.displayed
 
 
@@ -844,6 +895,85 @@ class LampShow:
             canvas.blit(self._dimmed(i, step), (0, 0), special_flags=flags)
 
 
+class VUMeter:
+    """One needle-meter look (see VU_METERS): scale, needle and bezel art
+    loaded once, then each frame is the scale, the needle rotated about its
+    pivot, and the bezel over the pivot.
+
+    The needle is a damped spring (VU_NATURAL_HZ/VU_DAMPING) in linear
+    deflection, driven by the analyzer's mid-band level as an amplitude --
+    like a real meter movement, so drops between beats are smoothed the way
+    a VU's are instead of reading every quiet 23ms chunk as a plunge in dB.
+    Deflection maps to dB, then to the printed marks' angles; below -20 it
+    runs linearly down to the rest pin at zero. Missing artwork leaves `ok`
+    False and the look drops out of the cycle."""
+
+    def __init__(self, name, spec, analyzer):
+        self.name = name
+        self.analyzer = analyzer
+        self.pivot = spec["pivot"]
+        self.mark_db = np.array([m[0] for m in spec["marks"]], dtype=float)
+        self.mark_angle = np.array([m[1] for m in spec["marks"]], dtype=float)
+        self.rest = spec["rest"]
+        self.pin = spec["pin"]
+        # Past the last mark, extend the last segment's slope up to the pin.
+        self.top_slope = (self.mark_angle[-1] - self.mark_angle[-2]) / (self.mark_db[-1] - self.mark_db[-2])
+        self.max_deflection = 10 ** ((self.mark_db[-1] + (self.pin - self.mark_angle[-1]) / self.top_slope) / 20)
+        self.deflection = 0.0
+        self.velocity = 0.0
+        self.last_time = None
+        art_dir = BASE_DIR / spec["dir"]
+        try:
+            self.scale = pygame.Surface((FRAME_W, FRAME_H))
+            self.scale.fill(BLACK)
+            self.scale.blit(pygame.image.load(str(art_dir / spec["scale"])).convert_alpha(), (0, 0))
+            self.bezel = pygame.image.load(str(art_dir / spec["bezel"])).convert_alpha()
+            needle = pygame.image.load(str(art_dir / spec["needle"])).convert_alpha()
+            # Twice the needle's height with the needle in the top half, so
+            # the surface's center is the pivot and rotozoom spins about it.
+            w, h = needle.get_size()
+            self.needle = pygame.Surface((w, h * 2), pygame.SRCALPHA)
+            self.needle.blit(needle, (0, 0))
+            self.ok = True
+        except (pygame.error, OSError) as exc:
+            print(f"{name} artwork load failed ({exc}) -- dropping that look.", file=sys.stderr)
+            self.ok = False
+
+    def _angle(self, deflection):
+        floor = 10 ** (self.mark_db[0] / 20)
+        if deflection <= floor:
+            return self.rest + (self.mark_angle[0] - self.rest) * deflection / floor
+        db = 20 * np.log10(deflection)
+        if db > self.mark_db[-1]:
+            return min(self.pin, self.mark_angle[-1] + (db - self.mark_db[-1]) * self.top_slope)
+        return float(np.interp(db, self.mark_db, self.mark_angle))
+
+    def render(self, canvas, raw):
+        """`raw` is unused (LampShow's signature) -- reads the analyzer's
+        mid-band level instead."""
+        now = time.monotonic()
+        elapsed = 0.0 if self.last_time is None else min(now - self.last_time, 0.1)
+        self.last_time = now
+        power = 10 ** ((self.analyzer.midband_db - VU_ZERO_DB) / 10) - 10 ** (VU_GATE_DB / 10)
+        drive = np.sqrt(max(0.0, power))
+        omega = 2 * np.pi * VU_NATURAL_HZ
+        steps = int(np.ceil(elapsed / VU_SUBSTEP))
+        for _ in range(steps):
+            dt = elapsed / steps
+            self.velocity += (omega * omega * (drive - self.deflection)
+                              - 2 * VU_DAMPING * omega * self.velocity) * dt
+            self.deflection += self.velocity * dt
+            # Stop pins: the needle thuds against them rather than bouncing.
+            if self.deflection < 0.0:
+                self.deflection, self.velocity = 0.0, 0.0
+            elif self.deflection > self.max_deflection:
+                self.deflection, self.velocity = self.max_deflection, 0.0
+        canvas.blit(self.scale, (0, 0))
+        needle = pygame.transform.rotozoom(self.needle, -self._angle(self.deflection), 1.0)
+        canvas.blit(needle, needle.get_rect(center=self.pivot))
+        canvas.blit(self.bezel, (0, 0))
+
+
 class VizApp:
     def __init__(self):
         settings = load_settings()
@@ -893,9 +1023,13 @@ class VizApp:
         self.look = settings["look"]
         self.look_index = LOOKS.index(self.look)
         self._rebuild_look_colors()
-        self.lamp_shows = {name: LampShow(name, spec, self.analyzer.band_centers)
-                           for name, spec in LAMP_SHOWS.items()}
-        if self.look in self.lamp_shows and not self.lamp_shows[self.look].ok:
+        # Full-frame artwork looks, lamp shows and needle meters alike --
+        # each has .ok and .render(canvas, raw).
+        self.art_looks = {name: LampShow(name, spec, self.analyzer.band_centers)
+                          for name, spec in LAMP_SHOWS.items()}
+        self.art_looks.update({name: VUMeter(name, spec, self.analyzer)
+                               for name, spec in VU_METERS.items()})
+        if self.look in self.art_looks and not self.art_looks[self.look].ok:
             self.look_index = 0
             self.look = LOOKS[0]
             self._rebuild_look_colors()
@@ -1011,8 +1145,8 @@ class VizApp:
             self.row_off = [OFF_GREY] * total
             self.col_on = None
             self.col_off = None
-        elif self.look in LAMP_SHOWS:
-            self.row_on = self.row_off = self.col_on = self.col_off = None  # see LampShow
+        elif self.look in LAMP_SHOWS or self.look in VU_METERS:
+            self.row_on = self.row_off = self.col_on = self.col_off = None  # see LampShow/VUMeter
         else:
             self.col_on = []
             self.col_off = []
@@ -1029,7 +1163,7 @@ class VizApp:
 
     def cycle_look(self, direction):
         self.look_index = (self.look_index + direction) % len(LOOKS)
-        while LOOKS[self.look_index] in self.lamp_shows and not self.lamp_shows[LOOKS[self.look_index]].ok:
+        while LOOKS[self.look_index] in self.art_looks and not self.art_looks[LOOKS[self.look_index]].ok:
             self.look_index = (self.look_index + direction) % len(LOOKS)
         self.look = LOOKS[self.look_index]
         print(f"look: {self.look}", file=sys.stderr)
@@ -1195,8 +1329,8 @@ class VizApp:
             return
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
-        if self.look in self.lamp_shows:
-            self.lamp_shows[self.look].render(canvas, self.analyzer.raw_levels)
+        if self.look in self.art_looks:
+            self.art_looks[self.look].render(canvas, self.analyzer.raw_levels)
             if self.power_dialog_active:
                 self.draw_power_dialog(canvas)
             self.fb.write_surface(canvas)

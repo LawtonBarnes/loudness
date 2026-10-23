@@ -40,10 +40,10 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle seven display looks, persisted as `look` in `settings.ini`:
-`hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), plus
-three "lamp shows" built from full-frame artwork (configured in
-`loudness.py`'s `LAMP_SHOWS` table):
+`←`/`→` cycle eight display looks, persisted as `look` in `settings.ini`:
+`hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), three
+"lamp shows" built from full-frame artwork (configured in `loudness.py`'s
+`LAMP_SHOWS` table), and a needle meter (`VU_METERS`):
 
 - `organ-12` -- a 1970s Radio Shack-style color organ. Twelve lamps
   behind diamond-pattern glass (artwork in `organ12/`) in three colors,
@@ -63,10 +63,19 @@ three "lamp shows" built from full-frame artwork (configured in
 
 Each lamp fires on its group's *beats* -- jumps above its own ~1s running
 average, measured in its own running standard deviations -- and goes
-fully dark between them. Every show holds each flash at full, then glows
-out slowly, dimming toward orange/red like a cooling filament --
-HEADLIGHTS and ORGAN-17 hold for about a quarter second, ORGAN-12 about
-half that, with a quicker rise and fade.
+fully dark between them. Every show holds each flash at full for about a
+quarter second, then glows out slowly, dimming toward orange/red like a
+cooling filament.
+
+- `marantz` -- a Marantz receiver's VU meter (artwork in `marantz/`: the
+  scale, a vertical needle, and a black bezel layer that hides the
+  needle's pivot). The needle reads the 250Hz-1.5K bands -- where music
+  stands well clear of room/fan noise -- and moves like a real meter
+  movement: a damped spring that rises in about 0.3s, overshoots a touch
+  and bounces with the beat, resting on its pin in silence. 0 VU is a
+  fixed level (`VU_ZERO_DB`, tuned on P1 to normal listening volume); the
+  auto-gain only pulls the needle back once the music gets loud.
+  `gain_bias` (Up/Down) doesn't affect it.
 
 ## Keyboard / remote controls
 
