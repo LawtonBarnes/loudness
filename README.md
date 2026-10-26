@@ -20,13 +20,29 @@ covers the FFT bins between the geometric mean of its neighboring
 centers, with the bottom/top bands bounded by `settings.ini`'s
 `low_freq`/`high_freq`.
 
-## Auto-gain, tilt, and per-mic calibration
+## Auto level, tilt, and per-mic calibration
 
-Levels are computed on a dB scale, with a continuously self-adjusting
-auto-gain (a peak-hold envelope tracks recent loud input and retargets
-gain so it sits just under clipping) so loud and quiet rooms both stay
-readable without a manual sensitivity knob. `Up`/`Down` adjust a manual
-`gain_bias` on top of that, persisted live to `settings.ini`.
+Levels are computed on a dB scale. With `auto_level = on` (the default,
+since 1.16) the display fills to whatever volume the music is at -- this
+is for looks, not measurement:
+
+- a peak tracker (fast attack, 3dB/s release) sets the gain so recent
+  peaks land near the top, at any volume;
+- silence is the mid-band level staying below `silence_db` for 2.5s:
+  the gain holds where the music left it and the display goes dark
+  (bars to the floor, needles on the pin, lamps out);
+- each band's room noise (e.g. the fans' 2K/4K hum) is learned -- during
+  silence, and from the quietest moments in between -- and saved to
+  `settings.ini` as `room_noise`; a band stays dark until it clears its
+  own noise, and noise-only bands never set the gain;
+- the needles swing so the mid-band's recent peaks read about -1 VU;
+  the bar looks are stretched (`AUTO_BAR_FILL`) so peaks clip at the top.
+
+`auto_level = off` is the older gated auto-gain (`sensitivity`,
+`noise_gate_db`, `squelch_db`, fixed `VU_ZERO_DB` needles). The ABOUT
+screen's AUTO LEVEL row flips between them live (`Left`/`Right`).
+`Up`/`Down` adjust a manual `gain_bias` on top of either, persisted live
+to `settings.ini` -- keep it at 0 with auto level on.
 
 A fixed linear tilt (`treble_boost`/`bass_cut_db`) compensates for music
 naturally carrying more bass/mid energy than treble. On top of *that*,
@@ -75,8 +91,9 @@ cooling filament.
   and bounces with the beat, resting on its pin in silence. Fast swings
   leave a short motion-blur smear: white light over the wedge the needle
   swept through in the last 3 frames, fading out behind it. 0 VU is a
-  fixed level (`VU_ZERO_DB`, tuned on P1 to normal listening volume); the
-  auto-gain only pulls the needle back once the music gets loud.
+  auto-leveled with `auto_level = on` (see above); with it off, 0 VU is a
+  fixed level (`VU_ZERO_DB`, tuned on P1 to normal listening volume) and
+  the auto-gain only pulls the needle back once the music gets loud.
   `gain_bias` (Up/Down) doesn't affect it.
 - `vu-peak` -- a green/red L-LEVEL VU meter (-20 to +3, artwork in
   `vupeak/`) with the same needle, smear and calibration as MARANTZ, plus
@@ -89,6 +106,7 @@ cooling filament.
 |---|---|
 | `↑` / `↓` | Adjust gain bias up/down (persisted to `settings.ini`) |
 | `←` / `→` | Cycle the display look/skin (persisted to `settings.ini`) |
+| `←` / `→` (ABOUT screen) | Flip AUTO LEVEL on/off (persisted to `settings.ini`) |
 | `Home` | Quit to the app menu |
 | `Q` / `Esc` / `Back` | Quit to the app menu |
 | `Power` | Shutdown/restart confirm dialog |

@@ -33,7 +33,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.15"
+VERSION = "1.16"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -268,6 +268,10 @@ def load_settings():
         "gain_bias": "0.0",
         "band_offsets": "0,0,0,0,0,0,0,0,0",
         "look": LOOKS[0],
+        "auto_level": "on",
+        "silence_db": "-56.5",
+        "auto_span_db": "30",
+        "room_noise": "",
     }
     parser.read(SETTINGS_PATH)
     section = parser["vizmic"]
@@ -279,6 +283,9 @@ def load_settings():
             file=sys.stderr,
         )
         band_offsets = [0.0] * len(BAND_CENTERS_HZ)
+    room_noise = [float(x) for x in section.get("room_noise").split(",") if x.strip()]
+    if len(room_noise) != len(BAND_CENTERS_HZ):
+        room_noise = None  # not learned yet (or the band layout changed) -- see SpectrumAnalyzer
     look = section.get("look")
     if look not in LOOKS:
         print(f"Unknown look '{look}' in settings.ini -- falling back to '{LOOKS[0]}'.", file=sys.stderr)
@@ -298,6 +305,10 @@ def load_settings():
         "bass_cut_db": section.getfloat("bass_cut_db"),
         "squelch_db": section.getfloat("squelch_db"),
         "band_offsets": band_offsets,
+        "auto_level": section.getboolean("auto_level"),
+        "silence_db": section.getfloat("silence_db"),
+        "auto_span_db": section.getfloat("auto_span_db"),
+        "room_noise": room_noise,
         "bar_gap": section.getint("bar_gap"),
         "led_height": section.getint("led_height"),
         "led_gap": section.getint("led_gap"),
@@ -447,6 +458,8 @@ def show_splash(fb):
 ABOUT_MARGIN_Y = 48  # keeps title/logo inside the CRT's visible area
 ABOUT_LINE_GAP = 8
 ABOUT_COLUMN_GAP = 16
+ABOUT_YELLOW = (0xFF, 0xFF, 0x00)  # the changeable value, same as TV DINNER's ABOUT
+ABOUT_AUTO_LEVEL_ROW = 1  # LEFT/RIGHT flips it -- see VizApp._build_about()
 LOGO_X_STRETCH = 720 / 640
 
 
@@ -460,11 +473,13 @@ def load_about_logo():
     return pygame.transform.smoothscale(img, (round(w * LOGO_X_STRETCH), h))
 
 
-def draw_about_screen(canvas, title_font, body_font, logo, title, rows):
+def draw_about_screen(canvas, title_font, body_font, logo, title, rows, selected=None):
     """`rows` is a list of (label, value) -- labels right-aligned in an
     orange column, values left-aligned in white beside them, the block
     centered in the space between the title and the logo. A row with an
-    empty label continues the previous row's value column."""
+    empty label continues the previous row's value column. Row `selected`
+    (an index, optional) is a setting LEFT/RIGHT can change: its value is
+    drawn in yellow between < > arrows."""
     frame_w, frame_h = canvas.get_size()
     canvas.fill(BLACK)
     title_surf = title_font.render(title, True, ORANGE)
@@ -477,7 +492,9 @@ def draw_about_screen(canvas, title_font, body_font, logo, title, rows):
     if not rows:
         return
     label_surfs = [body_font.render(label, True, ORANGE) if label else None for label, _ in rows]
-    value_surfs = [body_font.render(str(value), True, WHITE) for _, value in rows]
+    value_surfs = [body_font.render(f"< {value} >", True, ABOUT_YELLOW) if i == selected
+                   else body_font.render(str(value), True, WHITE)
+                   for i, (_, value) in enumerate(rows)]
     label_w = max((l.get_width() for l in label_surfs if l), default=0)
     value_w = max(v.get_width() for v in value_surfs)
     line_h = body_font.get_linesize() + ABOUT_LINE_GAP
@@ -593,6 +610,28 @@ TARGET_HEADROOM_DB = -4  # auto-gain aims for recent peaks to sit this far below
 PEAK_DECAY_DB_PER_SEC = 8  # how fast the peak-hold backs off once things get quieter
 GAIN_BLEND = 0.03  # per-frame blend toward the target gain (~1s settle time at 23ms/frame)
 
+# Auto level (2026-10-26, settings.ini auto_level, on by default): the display
+# fills to whatever volume the music is at, for looks rather than measurement.
+# The gated auto-gain above (auto_level = off) never boosted past
+# noise_gate_db's floor, so at normal listening volume it sat at a fixed gain
+# and quieter music just drew shorter bars. Here a peak tracker follows the
+# music all the way down, and silence is handled separately: below
+# silence_db (mid-band, like the needles) the gain holds where the music left
+# it, each band's room noise is learned, and the display goes dark.
+AUTO_ATTACK = 0.3  # per-frame blend of the peak tracker toward a louder frame
+AUTO_RELEASE_DB_PER_SEC = 3  # how fast it backs off once the music gets quieter
+AUTO_MIN_GAIN = -20  # floor on the auto-level's gain (a very hot mic gets cut, not just un-boosted)
+AUTO_MAX_GAIN = 60  # ceiling -- silence_db, not sensitivity, is what keeps it off the room noise
+AUTO_MIN_SPAN_DB = 10  # a band's display range never narrows below this -- if its noise is loud, it tops out higher
+SILENCE_HOLD_SEC = 2.5  # input below silence_db this long counts as silence (gaps between beats don't)
+SILENCE_SMOOTH = 0.15  # per-frame blend of the mid-band level silence_db is checked against (~150ms)
+NOISE_BLEND = 0.02  # per-frame blend of each band's learned room noise, during silence (~1s)
+NOISE_FALL = 0.05  # ...and toward any quieter moment, music or not (so it's never stuck too high)
+NOISE_SAVE_SEC = 3.0  # silence this long re-saves the learned room noise to settings.ini
+NOISE_MARGIN_DB = 4  # a band reads 0 until it's this far above its learned room noise
+VU_AUTO_PEAK_DB = -1.0  # VU reading the mid-band's recent peaks land on, with auto_level on
+AUTO_BAR_FILL = 0.7  # the bar looks read level/this (peaks clip) -- lamps and needles use the unstretched level
+
 
 class SpectrumAnalyzer:
     """Turns raw mic chunks into a smoothed, log-binned bar spectrum.
@@ -669,6 +708,10 @@ class SpectrumAnalyzer:
         squelch_db=0.0,
         gain_bias=0.0,
         band_offsets=None,
+        auto_level=False,
+        silence_db=-56.5,
+        auto_span_db=30.0,
+        room_noise=None,
     ):
         num_bars = len(BAND_CENTERS_HZ)
         self.num_bars = num_bars
@@ -753,6 +796,37 @@ class SpectrumAnalyzer:
         self.raw_levels = np.zeros(num_bars)
         self.vu_bands = (centers >= VU_LOW_HZ) & (centers <= VU_HIGH_HZ)
         self.midband_db = FLOOR_DB
+        self.silence_db = silence_db
+        self.auto_span_db = auto_span_db
+        self.auto_release_per_frame = AUTO_RELEASE_DB_PER_SEC * CHUNK / SAMPLE_RATE
+        self.silence_hold_frames = SILENCE_HOLD_SEC * SAMPLE_RATE / CHUNK
+        # Each band's room noise, post-tilt (fans, hiss): settled on during
+        # silence, and pulled down toward any quieter moment in between.
+        # Saved to settings.ini room_noise after each long enough silence
+        # (VizApp watches room_noise_changed), so a restart mid-song still
+        # knows the fans' 2K/4K hum is hum. Without a saved one, it starts
+        # from the first frame heard.
+        self.noise_db = None if room_noise is None else np.array(room_noise)
+        self.band_smooth_db = None
+        self.noise_save_frames = NOISE_SAVE_SEC * SAMPLE_RATE / CHUNK
+        self.room_noise_changed = False
+        self.set_auto_level(auto_level)
+
+    def set_auto_level(self, on):
+        """Switches between the auto level and the gated auto-gain (see
+        AUTO_ATTACK), starting either one's tracking fresh."""
+        self.auto_level = on
+        self.gain = self.max_gain
+        self.peak_hold_db = self.noise_gate_db
+        self.auto_peak_db = TARGET_HEADROOM_DB - self.max_gain
+        self.mid_peak_db = self.silence_db
+        self.mid_smooth_db = self.silence_db
+        self.quiet_frames = 0
+
+    def _track_peak(self, peak_db, frame_db):
+        if frame_db > peak_db:
+            return peak_db + (frame_db - peak_db) * AUTO_ATTACK
+        return peak_db - self.auto_release_per_frame
 
     def update(self, samples):
         magnitudes = np.abs(np.fft.rfft(samples * self.window))
@@ -769,7 +843,61 @@ class SpectrumAnalyzer:
         # track the peak *after* tilt, so gain targets whichever band is
         # actually tallest post-EQ, not the pre-EQ raw signal.
         tilted_db = raw_db + self.tilt_db
+        # Mid-band level, calibrated but untilted -- what the needles read,
+        # and what auto_level tells music from silence by.
+        mid_db = (raw_db + self.band_offsets)[self.vu_bands]
+        mid_level = 10 * np.log10(np.sum(10 ** (mid_db / 10)))
+        if self.auto_level:
+            targets = self._auto_level_targets(tilted_db, mid_level)
+            bar_targets = np.minimum(targets / AUTO_BAR_FILL, 1.0)
+        else:
+            targets = bar_targets = self._gated_targets(tilted_db, mid_level)
+        rising = bar_targets > self.displayed
+        blend = np.where(rising, ATTACK, DECAY)
+        self.displayed += (bar_targets - self.displayed) * blend
+        self.raw_levels = targets  # unsmoothed, for LampShow's beat detection
+        return self.displayed
 
+    def _auto_level_targets(self, tilted_db, mid_level):
+        """auto_level = on: see AUTO_ATTACK."""
+        if self.band_smooth_db is None:
+            self.band_smooth_db = tilted_db.copy()
+            if self.noise_db is None:
+                self.noise_db = tilted_db.copy()
+        self.band_smooth_db += (tilted_db - self.band_smooth_db) * SILENCE_SMOOTH
+        self.mid_smooth_db += (mid_level - self.mid_smooth_db) * SILENCE_SMOOTH
+        quieter = self.band_smooth_db < self.noise_db
+        self.noise_db[quieter] += (self.band_smooth_db[quieter] - self.noise_db[quieter]) * NOISE_FALL
+        if self.mid_smooth_db > self.silence_db:
+            if self.quiet_frames > self.noise_save_frames:
+                self.room_noise_changed = True
+            self.quiet_frames = 0
+        else:
+            self.quiet_frames += 1
+        if self.quiet_frames > self.silence_hold_frames:
+            self.noise_db += (self.band_smooth_db - self.noise_db) * NOISE_BLEND
+            self.midband_db = FLOOR_DB
+            return np.zeros(self.num_bars)
+        # Gain follows the loudest band that's actually above its own room
+        # noise -- at low volume the fans' steady 2K/4K hum can be the
+        # loudest band outright, and would otherwise set the gain.
+        heard = tilted_db > self.noise_db + NOISE_MARGIN_DB
+        frame_peak = tilted_db[heard].max() if heard.any() else -np.inf
+        self.auto_peak_db = self._track_peak(self.auto_peak_db, frame_peak)
+        self.mid_peak_db = self._track_peak(self.mid_peak_db, mid_level)
+        self.gain = np.clip(TARGET_HEADROOM_DB - self.auto_peak_db, AUTO_MIN_GAIN, AUTO_MAX_GAIN) + self.gain_bias
+        db = tilted_db + self.gain
+        # Each band spans auto_span_db up to 0dB, its bottom raised to clear
+        # that band's own room noise -- a band whose noise sits near the
+        # top reads dark unless it's this loud, rather than lit by the hum.
+        bottom = np.maximum(TARGET_HEADROOM_DB - self.auto_span_db, self.noise_db + self.gain + NOISE_MARGIN_DB)
+        top = np.maximum(0.0, bottom + AUTO_MIN_SPAN_DB)
+        # The needle: recent mid-band peaks land on VU_AUTO_PEAK_DB.
+        self.midband_db = mid_level - self.mid_peak_db + VU_ZERO_DB + VU_AUTO_PEAK_DB
+        return np.clip((db - bottom) / (top - bottom), 0.0, 1.0)
+
+    def _gated_targets(self, tilted_db, mid_level):
+        """auto_level = off: the original gated auto-gain, see the class docstring."""
         # Clamp what this frame can *report* to the peak-hold, not just
         # what the peak-hold decays to -- otherwise a quiet frame that's
         # still above the true (lower) FLOOR_DB, but below the gate,
@@ -790,18 +918,13 @@ class SpectrumAnalyzer:
             0.0,
             np.clip((db - squelch_threshold) / (-FLOOR_DB - self.squelch_db), 0.0, 1.0),
         )
-        rising = targets > self.displayed
-        blend = np.where(rising, ATTACK, DECAY)
-        self.displayed += (targets - self.displayed) * blend
-        self.raw_levels = targets  # unsmoothed, for LampShow's beat detection
         # VUMeter's level: the VU_LOW/HIGH_HZ bands power-summed, calibrated
         # but untilted, plus however far the auto-gain has backed off from
         # its noise-gate resting point (zero until the music gets loud).
         # gain_bias is left out -- it's tuned per puppet for the bars.
         backoff = min(0.0, self.gain - self.gain_bias - (TARGET_HEADROOM_DB - self.noise_gate_db))
-        mid_db = (raw_db + self.band_offsets)[self.vu_bands]
-        self.midband_db = 10 * np.log10(np.sum(10 ** (mid_db / 10))) + backoff
-        return self.displayed
+        self.midband_db = mid_level + backoff
+        return targets
 
 
 class LampShow:
@@ -1113,6 +1236,10 @@ class VizApp:
             settings["squelch_db"],
             settings["gain_bias"],
             settings["band_offsets"],
+            settings["auto_level"],
+            settings["silence_db"],
+            settings["auto_span_db"],
+            settings["room_noise"],
         )
         self.num_bars = self.analyzer.num_bars
         self.draw_w = int(FRAME_W * settings["underscan_scale"])
@@ -1316,26 +1443,42 @@ class VizApp:
         if self.about_canvas is not None:
             self.about_canvas = None
             return
+        self._build_about()
+
+    def _build_about(self):
         s = self.settings
+        if self.analyzer.auto_level:
+            level_rows = [("SILENCE", f"{s['silence_db']:g} DB"),
+                          ("SPAN", f"{s['auto_span_db']:g} DB")]
+        else:
+            level_rows = [("SQUELCH", f"{s['squelch_db']:g} DB"),
+                          ("NOISE GATE", f"{s['noise_gate_db']:g} DB")]
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         draw_about_screen(canvas, self.osd_font, self.about_body_font, self.about_logo,
                           f"LOUDNESS {VERSION}", [
                               ("LOOK", self.look.upper().replace("_", " ")),
+                              ("AUTO LEVEL", "ON" if self.analyzer.auto_level else "OFF"),
                               ("GAIN BIAS", f"{self.analyzer.gain_bias:+.1f} DB"),
-                              ("SENSITIVITY", f"{s['sensitivity']:g}"),
-                              ("SQUELCH", f"{s['squelch_db']:g} DB"),
-                              ("NOISE GATE", f"{s['noise_gate_db']:g} DB"),
+                              *level_rows,
                               ("RANGE", f"{s['low_freq']:g}-{s['high_freq']:g} HZ"),
                               ("MIC", s["device"].upper()),
-                          ])
+                          ], selected=ABOUT_AUTO_LEVEL_ROW)
         self.about_canvas = canvas
+
+    def toggle_auto_level(self):
+        """LEFT/RIGHT on the ABOUT screen (2026-10-26)."""
+        self.analyzer.set_auto_level(not self.analyzer.auto_level)
+        print(f"auto_level: {'on' if self.analyzer.auto_level else 'off'}", file=sys.stderr)
+        save_setting("vizmic", "auto_level", "on" if self.analyzer.auto_level else "off")
+        self._build_about()
 
     def handle_keycode(self, code):
         # Home is distinct from Menu/Q/Esc -- see menu.py's
         # launch_app() and bars.py's handle_keycode for the full rationale
         # (Home skips the App Menu and jumps straight to Health Monitor).
         # Back toggles ABOUT instead of quitting (2026-09-22); while it's
-        # up, only Back/Home/Power/Q/Esc/Menu do anything.
+        # up, only Back/Home/Power/Q/Esc/Menu do anything, plus Left/Right
+        # to flip AUTO LEVEL.
         if self.power_dialog_active:
             return self.handle_power_dialog_keycode(code)
         if code in (ecodes.KEY_HOMEPAGE, ecodes.KEY_HOME):
@@ -1348,6 +1491,8 @@ class VizApp:
             self.power_dialog_active = True
             self.power_dialog_selection = 0
         elif self.about_canvas is not None:
+            if code in (ecodes.KEY_LEFT, ecodes.KEY_RIGHT):
+                self.toggle_auto_level()
             return None
         elif code == ecodes.KEY_UP:
             self.analyzer.gain_bias += 3.0
@@ -1494,6 +1639,10 @@ class VizApp:
                 if samples is None:
                     sys.exit("Lost the mic capture stream (arecord exited) -- check `device` in settings.ini")
                 levels = self.analyzer.update(samples)
+                if self.analyzer.room_noise_changed:
+                    self.analyzer.room_noise_changed = False
+                    save_setting("vizmic", "room_noise",
+                                 ",".join(f"{x:.1f}" for x in self.analyzer.noise_db))
                 self.render(levels)
                 self.clock.tick(TARGET_FPS)
         finally:
