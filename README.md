@@ -1,5 +1,7 @@
 # LOUDNESS (`loudness`)
 
+> **Standalone:** runs on a single Raspberry Pi with any USB mic. The fleet extras (STRINGS/SCRUTE, the shared mic on MP) are optional.
+
 A Raspberry Pi appliance that renders a real-time LED-matrix-style audio
 spectrum visualizer over composite video, driven by a USB microphone.
 
