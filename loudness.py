@@ -18,6 +18,7 @@ import re
 import select
 import selectors
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -603,6 +604,77 @@ class MicCapture:
             self.proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+
+
+# Shared fleet mic (2026-11-07): `device = net:mp` in settings.ini reads the
+# gooseneck on MP over UDP from micserver.py instead of a local USB mic.
+# The puppets can't resolve "mp" by name, so short names map here (MP's
+# address is a Deco DHCP reservation); anything else is used as given.
+NET_MIC_PORT = 8440
+NET_MIC_HOSTS = {"mp": "192.168.68.77"}
+NET_MIC_MAGIC = b"LDN1"
+NET_MIC_HELLO_SEC = 1.0  # heartbeat; micserver drops listeners silent for 5 s
+
+
+class NetCapture:
+    """Same read_chunk()/close() interface as MicCapture, fed by
+    micserver.py's UDP stream. read_chunk() returns the newest CHUNK
+    samples (skipping any backlog, like MicCapture's pipe draining), or an
+    EMPTY array if the stream has stalled for about two frames -- run()
+    then holds the analyzer still and fades the display, rather than
+    feeding it digital silence that would drag the learned room noise
+    down to nothing. It never returns None, so a missing MP doesn't quit
+    the app; it just goes dark until the stream comes back."""
+
+    def __init__(self, device):
+        host, _, port = device[len("net:"):].partition(":")
+        self.addr = (NET_MIC_HOSTS.get(host.lower(), host), int(port or NET_MIC_PORT))
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("", 0))
+        self.sock.setblocking(False)
+        self.chunk_bytes = CHUNK * 2
+        self.buf = bytearray()
+        self.fresh = 0  # bytes arrived since the last chunk handed out
+        self.last_hello = 0.0
+
+    def _hello(self, now):
+        if now - self.last_hello >= NET_MIC_HELLO_SEC:
+            self.last_hello = now
+            try:
+                self.sock.sendto(b"LOUD", self.addr)
+            except OSError:
+                pass  # no route yet (WiFi still coming up) -- retry next second
+
+    def read_chunk(self):
+        deadline = time.monotonic() + 2 * CHUNK / SAMPLE_RATE
+        while True:
+            now = time.monotonic()
+            self._hello(now)
+            while True:
+                try:
+                    data = self.sock.recv(2048)
+                except (BlockingIOError, InterruptedError):
+                    break
+                except OSError:
+                    break
+                if data.startswith(NET_MIC_MAGIC):
+                    self.buf += data[8:]
+                    self.fresh += len(data) - 8
+            if len(self.buf) > self.chunk_bytes * 4:
+                del self.buf[: len(self.buf) - self.chunk_bytes * 4]
+            if self.fresh >= self.chunk_bytes:
+                self.fresh = 0
+                return np.frombuffer(bytes(self.buf[-self.chunk_bytes:]), dtype=np.int16).astype(np.float64)
+            if now >= deadline:
+                return np.empty(0)
+            select.select([self.sock], [], [], deadline - now)
+
+    def close(self):
+        self.sock.close()
+
+
+def open_capture(device):
+    return NetCapture(device) if device.lower().startswith("net:") else MicCapture(device)
 
 
 FLOOR_DB = -60  # dynamic range mapped onto the bar height, in dB below full scale
@@ -1224,7 +1296,7 @@ class VizApp:
 
         self.fb = FrameBuffer()
 
-        self.mic = MicCapture(settings["device"])
+        self.mic = open_capture(settings["device"])
 
         self.analyzer = SpectrumAnalyzer(
             settings["sensitivity"],
@@ -1638,7 +1710,15 @@ class VizApp:
                 samples = self.mic.read_chunk()
                 if samples is None:
                     sys.exit("Lost the mic capture stream (arecord exited) -- check `device` in settings.ini")
-                levels = self.analyzer.update(samples)
+                if samples.size == 0:
+                    # Network mic stalled (NetCapture): hold the analyzer
+                    # still and let the display fall dark.
+                    self.analyzer.displayed *= 0.85
+                    self.analyzer.raw_levels = np.zeros(len(self.analyzer.displayed))
+                    self.analyzer.midband_db = FLOOR_DB
+                    levels = self.analyzer.displayed
+                else:
+                    levels = self.analyzer.update(samples)
                 if self.analyzer.room_noise_changed:
                     self.analyzer.room_noise_changed = False
                     save_setting("vizmic", "room_noise",

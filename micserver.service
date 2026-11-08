@@ -1,0 +1,15 @@
+# LOUDNESS shared mic server -- MP only. Install:
+#   sudo cp /opt/loudness/micserver.service /etc/systemd/system/
+#   sudo systemctl enable --now micserver
+[Unit]
+Description=LOUDNESS shared mic server (UDP 8440)
+After=sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/loudness/micserver.py plughw:CMTECK,0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

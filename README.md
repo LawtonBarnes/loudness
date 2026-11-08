@@ -185,3 +185,17 @@ conflicts with it. A fresh install copies the template first:
     cp settings.example.ini settings.ini
 
 If `settings.ini` is missing, the app falls back to its built-in defaults.
+
+## Shared fleet mic (micserver)
+
+Since 2026-11-07 the fleet can share one USB gooseneck mic on MP instead of a
+mic per puppet. `micserver.py` (installed on MP as `micserver.service`) owns
+the mic and streams mono 44.1 kHz audio by unicast UDP (port 8440) to every
+LOUDNESS whose `settings.ini` says `device = net:mp`. Each listener sends a
+heartbeat once a second; if the stream stops, LOUDNESS fades dark and picks
+it back up when MP returns. Gooseneck calibration: `silence_db = -63`,
+`band_offsets` all 0 (quiet room about -72, low music about -53, normal
+about -39 mid-band).
+
+    sudo cp /opt/loudness/micserver.service /etc/systemd/system/
+    sudo systemctl enable --now micserver
