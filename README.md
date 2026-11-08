@@ -139,9 +139,13 @@ what each one does and why it exists.
    ```bash
    sudo git clone https://github.com/LawtonBarnes/loudness.git /opt/loudness
    ```
-   (`settings.ini` ships with sane defaults and `band_offsets` all
-   zero -- a freshly-cloned install works immediately with any mic, no
-   calibration required to get started.)
+   Then make your own settings file from the template (it isn't tracked
+   in git, so later `git pull`s never touch it):
+   ```bash
+   sudo cp /opt/loudness/settings.example.ini /opt/loudness/settings.ini
+   ```
+   The defaults work with any mic, with `band_offsets` all zero and no
+   calibration needed to get started. Room noise is learned automatically.
 
 3. **Find your mic's ALSA device** and set it in `settings.ini`:
    ```bash
@@ -169,6 +173,17 @@ what each one does and why it exists.
 
 7. **Reboot** and confirm the CRT shows reactive spectrum bars against
    real sound.
+
+8. **If needed, tune `silence_db` for your mic.** It is the one setting
+   that depends on how sensitive your mic is. The display goes dark when
+   the mid-band level stays below it for a few seconds. The default
+   (-56.5) was set for a cheap USB mic next to cooling fans. If the screen
+   stays dark during quiet music, lower it (e.g. -63); if it never goes
+   dark in a silent room, raise it. Each change needs a restart of the app.
+
+**One Pi is all you need.** Everything above is a standalone install. The
+fleet extras below (STRINGS/SCRUTE, the shared mic on MP) are optional and
+only switch on if you set them up.
 
 If you're running this as part of a [McBrain](https://github.com/LawtonBarnes/mcbrain)
 fleet instead of standalone, skip steps 4/6 -- install alongside
