@@ -58,7 +58,7 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle thirteen display looks, persisted as `look` in `settings.ini`:
+`←`/`→` cycle seventeen display looks, persisted as `look` in `settings.ini`:
 `hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), three
 "lamp shows" built from full-frame artwork (configured in `loudness.py`'s
 `LAMP_SHOWS` table), and two needle meters (`VU_METERS`):
@@ -120,6 +120,23 @@ resolution -- today's CPU, pre-2000 screens:
   floating-horizon hidden-line trick (computed at 360 columns, doubled).
   Bass sets the center spike, the overall level stirs the ripples, and
   every beat launches a ring that rolls out across the surface.
+
+Batch 2 (1.19), same module:
+
+- `spirograph` -- a gear rolls inside a ring and two pens (one near the
+  gear's rim, one near its middle) draw the figure live, gear and pen arms
+  shown. Gear/ring sizes are real-set tooth counts, picked so the figure
+  takes 5-30 laps to close; the music sets the pen speed and beats swell
+  the pen arms. A finished design holds 3 s, fades, and a new one starts.
+- `mandala` -- nine rings of petals, bass at the center to treble at the
+  edge, each petal stretching with its band, rings turning in alternating
+  directions; a sudden jump in a band flashes its ring.
+- `kaleidoscope` -- two pieces of coloured glass per band orbit near the
+  center of a 120x120 wedge (chunky pixels, doubled), joined by dim glass
+  shards, mirrored eight ways; beats spin the pieces.
+- `fractal` -- a Julia set at 180x120 whose seed walks the edge of the
+  Mandelbrot main cardioid at a pace set by the music; bass breathes the
+  zoom and a 16-colour palette rotation jumps ahead on every beat.
 
 ## Keyboard / remote controls
 

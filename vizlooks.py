@@ -1,5 +1,5 @@
 """Instrument-style LOUDNESS looks (2026-11-22): SPECTRUM PRO, SCOPE,
-LISSAJOUS and RIPPLE.
+LISSAJOUS and RIPPLE, then batch 2: SPIROGRAPH, MANDALA, KALEIDOSCOPE, FRACTAL.
 
 Same contract as LampShow/VUMeter in loudness.py: `.ok`, and
 `.render(canvas, raw)` drawing one 720x480 frame onto a black canvas. They
@@ -80,9 +80,9 @@ class SpectrumPro:
     ON_TOP = (90, 150, 255)         # the highest lit segment, a touch hotter
     OFF = (8, 22, 66)
     CAP = (190, 225, 255)
-    PEAK_HOLD = 0.22                # seconds a cap sits still before it falls
-    GRAVITY = 10.4                  # full scales per second squared (4x = half the fall time)
-    KICK = 0.28                     # share of a bar's rise speed that throws the cap up
+    PEAK_HOLD = 0.33                # seconds a cap sits still before it falls
+    GRAVITY = 4.6                   # full scales per second squared (fall takes 3/4 of 1.18's first try)
+    KICK = 0.41                     # share of a bar's rise speed that throws the cap up
 
     pillarbox = True                # 4:3 with black side bars on 16:9 screens (HIDEF), never stretched
 
@@ -156,7 +156,7 @@ class SpectrumPro:
         speed = np.maximum(0.0, (level - self.prev) / max(dt, 1e-3))
         # A bar slamming into its cap throws it upward; a slow climb just carries it.
         throw = rising & (speed > 1.5)
-        self.vel = np.where(throw, -np.minimum(speed * self.KICK, 1.1), self.vel)
+        self.vel = np.where(throw, -np.minimum(speed * self.KICK, 1.65), self.vel)
         self.vel = np.where(rising & ~throw, 0.0, self.vel)
         self.peak = np.where(rising, level, self.peak)
         self.hold = np.where(rising & ~throw, self.PEAK_HOLD, self.hold)
@@ -457,5 +457,318 @@ class Ripple:
             yy = ys[owner] + sign * step
             yy = np.minimum(yy, limit[owner]) if limit is not None else np.maximum(yy, 0)
             img[ci[owner], yy] = col[owner]
+        pygame.surfarray.blit_array(self.small, img)
+        pygame.transform.scale(self.small, (W, H), canvas)
+
+
+# --------------------------------------------------------------------- shared helpers for batch 2
+
+# The 16-colour EGA/VGA default palette, minus black -- batch 2's colour set.
+EGA = [(0, 0, 170), (0, 170, 0), (0, 170, 170), (170, 0, 0), (170, 0, 170), (170, 85, 0), (170, 170, 170),
+       (85, 85, 85), (85, 85, 255), (85, 255, 85), (85, 255, 255), (255, 85, 85), (255, 85, 255),
+       (255, 255, 85), (255, 255, 255)]
+EGA_BRIGHT = [EGA[i] for i in (8, 9, 10, 11, 12, 13, 14)]
+
+
+class MusicState:
+    """What every batch-2 look reads each frame: overall level, bass, a beat
+    flag with its strength, and smoothed envelopes of each."""
+
+    def __init__(self, analyzer):
+        self.analyzer = analyzer
+        bands = np.asarray(analyzer.band_centers)
+        self.bass_bands = np.nonzero(bands < 400)[0]
+        self.beats = BeatDetector(self.bass_bands)
+        self.level = 0.0
+        self.bass = 0.0
+        self.kick = 0.0          # jumps to 1 on a beat, decays to 0
+        self.beat = False
+        self.last_time = None
+        self.dt = 1 / 30
+
+    def update(self, raw):
+        now = time.monotonic()
+        self.dt = 1 / 30 if self.last_time is None else min(now - self.last_time, 0.1)
+        self.last_time = now
+        raw = np.asarray(raw, dtype=float)
+        shown = np.asarray(self.analyzer.displayed, dtype=float)
+        level = float(shown.mean()) if shown.size else 0.0
+        bass = float(raw[self.bass_bands].max()) if raw.size else 0.0
+        self.level += (level - self.level) * 0.15
+        self.bass += (bass - self.bass) * (0.5 if bass > self.bass else 0.12)
+        self.beat = bool(raw.size) and self.beats.update(raw)
+        self.kick = 1.0 if self.beat else self.kick * 0.86
+        return shown
+
+
+# --------------------------------------------------------------------- SPIROGRAPH
+
+class Spirograph:
+    """A plastic Spirograph set: a gear rolls inside a ring and the pen in one
+    of its holes draws the figure, live, a few seconds per design. The music
+    sets the pen speed, every beat kicks the pen out of its hole for a moment,
+    and when a design closes it fades and a new gear and hole are picked."""
+
+    RING_R = 215                    # px, the fixed outer ring
+    TEETH = (96, 105, 120, 144, 150)  # ring sizes in teeth...
+    GEARS = (24, 30, 32, 36, 40, 42, 45, 48, 52, 56, 60, 63, 64, 72, 75, 80, 84)  # ...and gear sizes
+
+    def __init__(self, analyzer, font_path):
+        self.music = MusicState(analyzer)
+        self.ok = True
+        self.ink = pygame.Surface((W, H))
+        self.rng = np.random.default_rng()
+        self.cx, self.cy = W / 2, H / 2
+        self.fading = 0
+        self.holding = 0
+        self._new_design()
+
+    def _new_design(self):
+        # only gear/ring pairs that take 5-30 laps to close: the rich, many-lobed figures
+        pairs = [(R, g) for R in self.TEETH for g in self.GEARS
+                 if g < R - 8 and 5 <= g // np.gcd(g, R) <= 30]
+        ring, gear = pairs[int(self.rng.integers(len(pairs)))]
+        self.R = self.RING_R
+        self.r = self.RING_R * gear / ring
+        # two pens: one in a hole near the gear's rim, one near its middle
+        self.ds = [self.r * float(self.rng.uniform(0.75, 0.95)), self.r * float(self.rng.uniform(0.30, 0.55))]
+        laps = gear // np.gcd(gear, ring)                            # turns of the gear around the ring to close
+        self.theta_end = 2 * np.pi * laps
+        self.theta = 0.0
+        a = int(self.rng.integers(len(EGA_BRIGHT)))
+        b = (a + int(self.rng.integers(2, len(EGA_BRIGHT) - 1))) % len(EGA_BRIGHT)   # never a near neighbour
+        self.colors = [EGA_BRIGHT[a], EGA_BRIGHT[b]]
+        self.swell = 0.0
+        self.lasts = [self._pen(0.0, d, 0.0) for d in self.ds]
+        self.ink.fill((0, 0, 0))
+
+    def _pen(self, theta, d, wobble):
+        R, r, d = self.R, self.r, d * (1 + wobble)
+        x = (R - r) * np.cos(theta) + d * np.cos((R - r) / r * theta)
+        y = (R - r) * np.sin(theta) - d * np.sin((R - r) / r * theta)
+        return self.cx + x, self.cy + y
+
+    def render(self, canvas, raw):
+        m = self.music
+        m.update(raw)
+        if self.holding:                    # admire the finished design for a moment
+            self.holding -= 1
+            if self.holding == 0:
+                self.fading = 30
+            canvas.blit(self.ink, (0, 0))
+            return
+        if self.fading:
+            self.fading -= 1
+            self.ink.fill((215, 215, 215), special_flags=pygame.BLEND_MULT)
+            if self.fading == 0:
+                self._new_design()
+            canvas.blit(self.ink, (0, 0))
+            return
+        # pen speed: ~10 s per design at an average level, faster when it's loud
+        speed = self.theta_end / 10.0 * (0.6 + 2.0 * m.level)
+        step = speed * m.dt
+        n = max(2, int(step / 0.03))
+        thetas = self.theta + np.linspace(0, step, n + 1)[1:]
+        # a beat swells the pen arms out and back over a few frames (no kinks)
+        self.swell += ((0.10 if m.kick > 0.5 else 0.0) - self.swell) * 0.25
+        for k, d in enumerate(self.ds):
+            px, py = self._pen(thetas, d, self.swell)
+            pts = [self.lasts[k]] + list(zip(px.tolist(), py.tolist()))
+            pygame.draw.lines(self.ink, self.colors[k], False, pts, 2)
+            self.lasts[k] = pts[-1]
+        self.theta = thetas[-1]
+        canvas.blit(self.ink, (0, 0))
+        # the plastic: outer ring, the rolling gear, its pen hole
+        pygame.draw.circle(canvas, (60, 60, 60), (round(self.cx), round(self.cy)), self.R, 1)
+        gx = self.cx + (self.R - self.r) * np.cos(self.theta)
+        gy = self.cy + (self.R - self.r) * np.sin(self.theta)
+        pygame.draw.circle(canvas, (110, 110, 110), (round(gx), round(gy)), round(self.r), 1)
+        for px, py in self.lasts:
+            pygame.draw.line(canvas, (110, 110, 110), (round(gx), round(gy)), (round(px), round(py)), 1)
+            pygame.draw.circle(canvas, (255, 255, 255), (round(px), round(py)), 3)
+        if self.theta >= self.theta_end:
+            self.holding = 90       # three seconds on show, one to fade, then a new design
+
+
+# --------------------------------------------------------------------- MANDALA
+
+class Mandala:
+    """Nine rings of petals, bass at the center out to treble at the edge.
+    Each petal stretches with its band's level, the rings turn in alternating
+    directions, and a beat flashes the ring that caused it."""
+
+    def __init__(self, analyzer, font_path):
+        self.music = MusicState(analyzer)
+        self.ok = True
+        n = analyzer.num_bars
+        self.n = n
+        self.radius = 34 + np.arange(n) * 22.0          # ring base radii
+        self.petals = 6 + 2 * np.arange(n)              # petals per ring
+        self.spin = np.where(np.arange(n) % 2, -1.0, 1.0) * (0.25 + 0.05 * np.arange(n))
+        self.angle = np.zeros(n)
+        self.flash = np.zeros(n)
+        self.prev = np.zeros(n)
+        hues = np.linspace(0.0, 0.8, n)
+        self.colors = []
+        for h in hues:
+            c = pygame.Color(0)
+            c.hsva = (h * 360, 90, 100, 100)
+            self.colors.append((c.r, c.g, c.b))
+        self.cx, self.cy = W / 2, H / 2
+
+    def render(self, canvas, raw):
+        m = self.music
+        shown = m.update(raw)
+        raw = np.asarray(raw, dtype=float)
+        if raw.size == self.n:
+            jump = raw - self.prev
+            self.flash = np.where(jump > 0.25, 1.0, self.flash * 0.85)
+            self.prev = raw.copy()
+        self.angle += self.spin * m.dt * (0.4 + 1.6 * m.level)
+        # back to front: outer rings first, so inner petals sit on top
+        for i in range(self.n - 1, -1, -1):
+            lvl = float(shown[i]) if i < len(shown) else 0.0
+            k = int(self.petals[i])
+            base = self.radius[i]
+            length = 10 + 30 * lvl
+            width = np.pi / k * (0.55 + 0.35 * lvl)
+            a = self.angle[i] + np.arange(k) * 2 * np.pi / k
+            col = self.colors[i]
+            bright = 0.35 + 0.65 * max(lvl, self.flash[i])
+            fill = tuple(int(c * bright * 0.45) for c in col)
+            edge = tuple(min(255, int(c * bright + 60 * self.flash[i])) for c in col)
+            for ang in a:
+                p = [(self.cx + base * np.cos(ang - width), self.cy + base * np.sin(ang - width)),
+                     (self.cx + (base + length * 0.6) * np.cos(ang - width * 0.8),
+                      self.cy + (base + length * 0.6) * np.sin(ang - width * 0.8)),
+                     (self.cx + (base + length) * np.cos(ang), self.cy + (base + length) * np.sin(ang)),
+                     (self.cx + (base + length * 0.6) * np.cos(ang + width * 0.8),
+                      self.cy + (base + length * 0.6) * np.sin(ang + width * 0.8)),
+                     (self.cx + base * np.cos(ang + width), self.cy + base * np.sin(ang + width))]
+                pygame.draw.polygon(canvas, fill, p)
+                pygame.draw.aalines(canvas, edge, True, p)
+        core = 14 + 22 * m.bass + 10 * m.kick
+        pygame.draw.circle(canvas, self.colors[0], (round(self.cx), round(self.cy)), round(core))
+        pygame.draw.circle(canvas, (255, 255, 255), (round(self.cx), round(self.cy)), round(core * 0.45))
+
+
+# --------------------------------------------------------------------- KALEIDOSCOPE
+
+class Kaleidoscope:
+    """A wedge of coloured glass mirrored eight ways. One blob per band
+    orbits in the wedge at a size set by its level, leaving trails; beats
+    spin the whole set of pieces. Drawn at 120x120 chunky pixels per
+    eighth, so the mirror seams stay sharp like the real tube."""
+
+    S = 240                         # mirrored square, drawn at half size then doubled
+
+    def __init__(self, analyzer, font_path):
+        self.music = MusicState(analyzer)
+        self.ok = True
+        n = analyzer.num_bars
+        self.n = n
+        self.src = pygame.Surface((self.S, self.S))
+        self.big = pygame.Surface((self.S * 2, self.S * 2))
+        rng = np.random.default_rng(7)
+        k = 2 * n                                    # two pieces of glass per band
+        self.band = np.arange(k) % n
+        self.orbit = rng.uniform(4, 70, k)
+        self.speed = rng.uniform(0.3, 1.1, k) * rng.choice((-1, 1), k)
+        self.phase = rng.uniform(0, 2 * np.pi, k)
+        self.colors = [EGA_BRIGHT[i % len(EGA_BRIGHT)] for i in range(k)]
+        self.twist = 0.0
+        self.tri = np.tri(self.S // 2, dtype=bool)[..., None]
+
+    def render(self, canvas, raw):
+        m = self.music
+        shown = m.update(raw)
+        self.twist += m.dt * (0.15 + 0.4 * m.level) + 0.35 * (1.0 if m.beat else 0.0)
+        self.src.fill((6, 6, 6), special_flags=pygame.BLEND_SUB)            # trails fade
+        h = self.S / 2 - 38                          # near the corner that becomes the picture's center
+        pts = []
+        for i in range(len(self.band)):
+            lvl = float(shown[self.band[i]]) if self.band[i] < len(shown) else 0.0
+            a = self.phase[i] + self.twist * self.speed[i] * 3
+            r = self.orbit[i] * (0.7 + 0.3 * np.sin(a * 0.7))
+            x, y = h + r * np.cos(a), h + r * np.sin(a)
+            pts.append((x, y))
+            size = 4 + 16 * lvl
+            pygame.draw.circle(self.src, self.colors[i], (round(x), round(y)), round(size))
+        # shards of glass between neighbouring pieces, drawn dim so the blobs sit on them
+        for i in range(0, len(pts) - 2, 3):
+            c = tuple(v // 3 for v in self.colors[i])
+            pygame.draw.polygon(self.src, c, pts[i:i + 3])
+        arr = pygame.surfarray.pixels3d(self.src)
+        q = np.array(arr[:self.S // 2, :self.S // 2])
+        del arr
+        q = np.where(self.tri, q, q.transpose(1, 0, 2))                     # mirror across the diagonal
+        top = np.concatenate([q, q[::-1]], axis=0)
+        full = np.concatenate([top, top[:, ::-1]], axis=1)
+        pygame.surfarray.blit_array(self.src, full)
+        pygame.transform.scale(self.src, (self.S * 2, self.S * 2), self.big)
+        x0 = (W - self.S * 2) // 2
+        canvas.blit(self.big, (x0, 0))
+        # the tube's edge: mirror the outer columns into the side margins
+        canvas.blit(pygame.transform.flip(self.big.subsurface((0, 0, x0, H)), True, False), (0, 0))
+        canvas.blit(pygame.transform.flip(self.big.subsurface((self.S * 2 - x0, 0, x0, H)), True, False),
+                    (W - x0, 0))
+
+
+# --------------------------------------------------------------------- FRACTAL
+
+class Fractal:
+    """A Julia set at CGA-ish 180x120 chunky pixels. Its seed walks the edge
+    of the Mandelbrot set's main cardioid (where the shapes are most alive)
+    at a pace set by the music; the bass breathes the zoom, and the colours
+    cycle through a 16-colour palette like a demo-scene palette rotation,
+    jumping ahead on every beat."""
+
+    GW, GH = 180, 120
+    ITER = 24
+
+    def __init__(self, analyzer, font_path):
+        self.music = MusicState(analyzer)
+        self.ok = True
+        x = np.linspace(-1.6, 1.6, self.GW)
+        y = np.linspace(-1.07, 1.07, self.GH)
+        self.grid = (x[:, None] + 1j * y[None, :]).astype(np.complex64)
+        self.walk = 0.0
+        self.cycle = 0.0
+        pal = []
+        for i in range(32):                         # 16 colours there and back, so the cycle has no seam
+            t = i / 16 if i < 16 else (32 - i) / 16
+            c = pygame.Color(0)
+            c.hsva = ((200 + 300 * t) % 360, 85, 35 + 65 * t, 100)
+            pal.append((c.r, c.g, c.b))
+        self.palette = np.array(pal, dtype=np.uint8)
+        self.small = pygame.Surface((self.GW, self.GH))
+
+    def render(self, canvas, raw):
+        m = self.music
+        m.update(raw)
+        self.walk += m.dt * (0.05 + 0.35 * m.level)
+        self.cycle += m.dt * (4 + 20 * m.level) + (6 if m.beat else 0)
+        # a point on the main cardioid's edge, pulled slightly inside so the set stays connected
+        t = self.walk
+        mu = 0.5 * np.exp(1j * t) * 0.985
+        c = mu * (1 - mu)
+        zoom = 1.0 - 0.18 * m.bass
+        z = (self.grid * zoom).ravel()
+        c = np.complex64(c)
+        count = np.full(z.size, -1, dtype=np.int32)          # -1 = never escaped (inside the set)
+        where = np.arange(z.size)
+        for k in range(self.ITER):
+            z = z * z + c
+            esc = (z.real * z.real + z.imag * z.imag) > 4.0
+            if esc.any():
+                count[where[esc]] = k
+                keep = ~esc
+                z, where = z[keep], where[keep]
+            if not z.size:
+                break
+        idx = (count + int(self.cycle)) % len(self.palette)
+        img = self.palette[idx]
+        img[count < 0] = (0, 0, 0)
+        img = img.reshape(self.GW, self.GH, 3)
         pygame.surfarray.blit_array(self.small, img)
         pygame.transform.scale(self.small, (W, H), canvas)

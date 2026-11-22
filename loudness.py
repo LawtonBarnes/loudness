@@ -36,7 +36,7 @@ import pygame  # noqa: E402  (must come after SDL env vars are set)
 
 import vizlooks  # noqa: E402
 
-VERSION = "1.18"
+VERSION = "1.19"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -68,13 +68,18 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
 LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17", "marantz",
-         "vu-peak", "spectrum-pro", "scope", "lissajous", "ripple")
+         "vu-peak", "spectrum-pro", "scope", "lissajous", "ripple", "spirograph", "mandala", "kaleidoscope",
+         "fractal")
 # Instrument looks (2026-11-22), drawn entirely in code -- see vizlooks.py.
 INSTRUMENT_LOOKS = {
     "spectrum-pro": vizlooks.SpectrumPro,
     "scope": vizlooks.Scope,
     "lissajous": vizlooks.Lissajous,
     "ripple": vizlooks.Ripple,
+    "spirograph": vizlooks.Spirograph,
+    "mandala": vizlooks.Mandala,
+    "kaleidoscope": vizlooks.Kaleidoscope,
+    "fractal": vizlooks.Fractal,
 }
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
