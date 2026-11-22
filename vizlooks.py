@@ -80,9 +80,9 @@ class SpectrumPro:
     ON_TOP = (90, 150, 255)         # the highest lit segment, a touch hotter
     OFF = (8, 22, 66)
     CAP = (190, 225, 255)
-    PEAK_HOLD = 0.45                # seconds a cap sits still before it falls
-    GRAVITY = 2.6                   # full scales per second squared
-    KICK = 0.55                     # share of a bar's rise speed that throws the cap up
+    PEAK_HOLD = 0.22                # seconds a cap sits still before it falls
+    GRAVITY = 10.4                  # full scales per second squared (4x = half the fall time)
+    KICK = 0.28                     # share of a bar's rise speed that throws the cap up
 
     def __init__(self, analyzer, font_path):
         self.analyzer = analyzer
@@ -154,7 +154,7 @@ class SpectrumPro:
         speed = np.maximum(0.0, (level - self.prev) / max(dt, 1e-3))
         # A bar slamming into its cap throws it upward; a slow climb just carries it.
         throw = rising & (speed > 1.5)
-        self.vel = np.where(throw, -np.minimum(speed * self.KICK, 2.2), self.vel)
+        self.vel = np.where(throw, -np.minimum(speed * self.KICK, 1.1), self.vel)
         self.vel = np.where(rising & ~throw, 0.0, self.vel)
         self.peak = np.where(rising, level, self.peak)
         self.hold = np.where(rising & ~throw, self.PEAK_HOLD, self.hold)
