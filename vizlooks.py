@@ -84,6 +84,8 @@ class SpectrumPro:
     GRAVITY = 10.4                  # full scales per second squared (4x = half the fall time)
     KICK = 0.28                     # share of a bar's rise speed that throws the cap up
 
+    pillarbox = True                # 4:3 with black side bars on 16:9 screens (HIDEF), never stretched
+
     def __init__(self, analyzer, font_path):
         self.analyzer = analyzer
         self.ok = True
@@ -373,6 +375,7 @@ class Ripple:
     COLOR_BACK = np.array([18, 110, 48], dtype=np.float32)
     MAX_RINGS = 6
     RING_SPEED = 0.9                # world units per second
+    ZOOM = 1.5                      # front edge runs off the sides, plane fills the lower half
     LINK = 5                        # px: longest vertical run used to join neighbouring columns
 
     def __init__(self, analyzer, font_path):
@@ -383,13 +386,13 @@ class Ripple:
         cols = np.arange(C, dtype=np.float32)
         self.z = np.linspace(-1, 1, n, dtype=np.float32)[:, None]          # front to back
         self.depth = 0.55 + 0.45 * (1 - self.z) / 2
-        x = (cols[None, :] - C / 2) / (C * 0.47 * self.depth)
+        x = (cols[None, :] - C / 2) / (C * 0.47 * self.depth * self.ZOOM)
         self.inside = np.abs(x) <= 1
         self.r = np.sqrt(x ** 2 + self.z ** 2).astype(np.float32)
         self.decay = np.exp(-self.r * 1.5)
         self.spike = np.exp(-(self.r * 11.0) ** 2)
-        self.base_y = (H * 0.20 + (1 - self.z) / 2 * H * 0.60).astype(np.float32)
-        self.scale = 58 * self.depth
+        self.base_y = (H / 2 + ((1 - self.z) / 2 - 0.5) * H * 0.60 * self.ZOOM).astype(np.float32)
+        self.scale = 58 * self.depth * self.ZOOM
         t = (np.linspace(0, 1, n, dtype=np.float32) ** 0.8)[:, None]
         self.color = (self.COLOR_FRONT * (1 - t[..., None]) + self.COLOR_BACK * t[..., None]).astype(np.uint8)
 
@@ -444,10 +447,15 @@ class Ripple:
         ys = y[si, ci]
         col = self.color[si, 0]
         img[ci, ys] = col
-        for k in range(1, self.LINK + 1):
-            down = run[si, ci] >= k
-            img[ci[down], np.minimum(ys[down] + k, front[si[down], ci[down]] - 1)] = col[down]
-            up = rise[si, ci] >= k
-            img[ci[up], np.maximum(ys[up] - k, 0)] = col[up]
+        # the joins: every point gets a run of 1..LINK pixels, laid out in one go
+        for lengths, sign, limit in ((run[si, ci], 1, front[si, ci] - 1), (rise[si, ci], -1, None)):
+            total = int(lengths.sum())
+            if not total:
+                continue
+            owner = np.repeat(np.arange(lengths.size), lengths)
+            step = np.arange(total) - np.repeat(np.cumsum(lengths) - lengths, lengths) + 1
+            yy = ys[owner] + sign * step
+            yy = np.minimum(yy, limit[owner]) if limit is not None else np.maximum(yy, 0)
+            img[ci[owner], yy] = col[owner]
         pygame.surfarray.blit_array(self.small, img)
         pygame.transform.scale(self.small, (W, H), canvas)

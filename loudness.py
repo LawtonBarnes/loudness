@@ -382,6 +382,7 @@ class FrameBuffer:
         if self.bpp not in (16, 32):
             raise RuntimeError(f"Unsupported framebuffer depth: {self.bpp}bpp")
         self.rgb565 = None  # built on first write -- see write_surface()
+        self.boxed = None  # pillarboxed frame for 4:3 looks on wide screens -- see write_surface()
         # Vsync (2026-10-14): writing mid-scanout showed as horizontal tearing
         # -- top of the field old frame, bottom new -- glaring on ORGAN-12's
         # full-screen flashes. Waiting for vblank first and then writing (the
@@ -390,8 +391,17 @@ class FrameBuffer:
         # beam. Falls back to unsynced writes if the driver lacks the ioctl.
         self.vsync = True
 
-    def write_surface(self, surface):
-        if surface.get_size() != (self.width, self.height):
+    def write_surface(self, surface, pillarbox=False):
+        if pillarbox and self.width * 3 > self.height * 4:
+            # 4:3 picture, black side bars (2026-11-22, HIDEF) -- never stretched
+            inner_w = round(self.height * 4 / 3)
+            if self.boxed is None:
+                self.boxed = pygame.Surface((self.width, self.height))
+            self.boxed.fill(BLACK)
+            pygame.transform.scale(surface, (inner_w, self.height),
+                                   self.boxed.subsurface(((self.width - inner_w) // 2, 0, inner_w, self.height)))
+            surface = self.boxed
+        elif surface.get_size() != (self.width, self.height):
             surface = pygame.transform.scale(surface, (self.width, self.height))
         if self.bpp == 16:
             # SDL's own blit into an RGB565 surface (2026-10-14) -- bit-identical
@@ -1672,10 +1682,11 @@ class VizApp:
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
         if self.look in self.art_looks:
-            self.art_looks[self.look].render(canvas, self.analyzer.raw_levels)
+            look = self.art_looks[self.look]
+            look.render(canvas, self.analyzer.raw_levels)
             if self.power_dialog_active:
                 self.draw_power_dialog(canvas)
-            self.fb.write_surface(canvas)
+            self.fb.write_surface(canvas, pillarbox=getattr(look, "pillarbox", False))
             return
         canvas.blit(self.title_surface, (self.title_x, self.title_y))
         for i, level in enumerate(levels):
