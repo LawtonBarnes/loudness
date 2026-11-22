@@ -58,7 +58,7 @@ values for your own hardware.
 
 ## Looks
 
-`←`/`→` cycle nine display looks, persisted as `look` in `settings.ini`:
+`←`/`→` cycle thirteen display looks, persisted as `look` in `settings.ini`:
 `hard`, `gradient`, `color_off`, `grey_off` (LED-matrix bar skins), three
 "lamp shows" built from full-frame artwork (configured in `loudness.py`'s
 `LAMP_SHOWS` table), and two needle meters (`VU_METERS`):
@@ -101,6 +101,25 @@ cooling filament.
   `vupeak/`) with the same needle, smear and calibration as MARANTZ, plus
   a PEAK lamp that lights whenever the needle is in the red (0 VU and up)
   and holds for 0.2s after it drops back.
+
+Instrument looks (1.18, `vizlooks.py`), drawn entirely in code at NTSC
+resolution -- today's CPU, pre-2000 screens:
+
+- `spectrum-pro` -- blue segmented bars under an orange measurement grid
+  (0-30 dB both sides, Hz legend, the "Loudness" script title from
+  `spectrumpro/TITLE.png`). Peak caps hold for ~0.5 s, then fall under
+  gravity; a bar slamming into its cap throws it back up.
+- `scope` -- an oscilloscope on a Tektronix-style 10x8 graticule (0%/100%
+  dotted lines, 10/90 marks): green phosphor trace with afterglow,
+  triggered on a rising zero crossing so it stands still, auto-ranged,
+  lightly smoothed like an analog front end.
+- `lissajous` -- the same screen in X-Y mode. The mic is mono, so it plots
+  the signal against itself a quarter period of its strongest frequency
+  later: steady tones draw circles, chords draw knots, drums scribble.
+- `ripple` -- a 1980s wireframe ripple surface drawn with the
+  floating-horizon hidden-line trick (computed at 360 columns, doubled).
+  Bass sets the center spike, the overall level stirs the ripples, and
+  every beat launches a ring that rolls out across the surface.
 
 ## Keyboard / remote controls
 

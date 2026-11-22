@@ -34,7 +34,9 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.17"
+import vizlooks  # noqa: E402
+
+VERSION = "1.18"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
@@ -66,7 +68,14 @@ TITLE_PREFIX = "SPECTRUM ANALYZER"
 # Left/Right-cyclable display skins (2026-09-11) -- see VizApp._rebuild_look_colors()
 # for what each one actually draws. Order here is the Left/Right cycle order.
 LOOKS = ("hard", "gradient", "color_off", "grey_off", "organ-12", "headlights", "organ-17", "marantz",
-         "vu-peak")
+         "vu-peak", "spectrum-pro", "scope", "lissajous", "ripple")
+# Instrument looks (2026-11-22), drawn entirely in code -- see vizlooks.py.
+INSTRUMENT_LOOKS = {
+    "spectrum-pro": vizlooks.SpectrumPro,
+    "scope": vizlooks.Scope,
+    "lissajous": vizlooks.Lissajous,
+    "ripple": vizlooks.Ripple,
+}
 OFF_GREY = (51, 51, 51)  # flat 20%-grey, used as the "off" segment color for 3 of the 4 looks
 HARD_GREEN = (0, 200, 0)
 HARD_YELLOW = (230, 200, 0)
@@ -799,6 +808,7 @@ class SpectrumAnalyzer:
         self.squelch_db = squelch_db
         self.peak_decay_per_frame = PEAK_DECAY_DB_PER_SEC * CHUNK / SAMPLE_RATE
         self.window = np.hanning(CHUNK)
+        self.last_samples = None
         # Music skews toward bass/mid energy, so a flat dB scale makes the
         # spectrum trail off toward the right -- treble_boost ramps in extra
         # dB by the last band to compensate, bass_cut_db cuts the bottom
@@ -928,6 +938,7 @@ class SpectrumAnalyzer:
         blend = np.where(rising, ATTACK, DECAY)
         self.displayed += (bar_targets - self.displayed) * blend
         self.raw_levels = targets  # unsmoothed, for LampShow's beat detection
+        self.last_samples = samples  # the waveform itself, for the scope looks
         return self.displayed
 
     def _auto_level_targets(self, tilted_db, mid_level):
@@ -1341,6 +1352,7 @@ class VizApp:
                           for name, spec in LAMP_SHOWS.items()}
         self.art_looks.update({name: VUMeter(name, spec, self.analyzer)
                                for name, spec in VU_METERS.items()})
+        self.art_looks.update({name: cls(self.analyzer, FONT_PATH) for name, cls in INSTRUMENT_LOOKS.items()})
         if self.look in self.art_looks and not self.art_looks[self.look].ok:
             self.look_index = 0
             self.look = LOOKS[0]
@@ -1457,7 +1469,7 @@ class VizApp:
             self.row_off = [OFF_GREY] * total
             self.col_on = None
             self.col_off = None
-        elif self.look in LAMP_SHOWS or self.look in VU_METERS:
+        elif self.look in LAMP_SHOWS or self.look in VU_METERS or self.look in INSTRUMENT_LOOKS:
             self.row_on = self.row_off = self.col_on = self.col_off = None  # see LampShow/VUMeter
         else:
             self.col_on = []
@@ -1716,6 +1728,7 @@ class VizApp:
                     self.analyzer.displayed *= 0.85
                     self.analyzer.raw_levels = np.zeros(len(self.analyzer.displayed))
                     self.analyzer.midband_db = FLOOR_DB
+                    self.analyzer.last_samples = None
                     levels = self.analyzer.displayed
                 else:
                     levels = self.analyzer.update(samples)
